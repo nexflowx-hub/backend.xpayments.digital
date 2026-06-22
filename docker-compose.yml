@@ -1,0 +1,12 @@
+services:
+  xpayments-api:
+    build: .
+    container_name: xpayments-api
+    ports:
+      - "80:8084"
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - .:/app
+      - /app/node_modules
