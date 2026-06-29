@@ -28,50 +28,77 @@ enum LedgerStatus {
 }
 
 model Merchant {
-  id                 String    @id @default(uuid()) @db.Uuid
-  name               String    @db.VarChar(255)
-  email              String    @unique @db.VarChar(255)
-  password           String    @db.VarChar(255)
-  tier               TierLevel @default(TIER_C_STANDARD)
-  payoutWalletUSDT   String?   @db.VarChar(255)
-  customFeePercent   Decimal?  @db.Decimal(5,2)
-  hasRiskReserve     Boolean   @default(false)
-  reservePercent     Decimal   @default(0.00) @db.Decimal(5,2)
-  reserveDays        Int       @default(0)
-  status             String    @default("ACTIVE") @db.VarChar(50)
-  createdAt          DateTime  @default(now()) @db.Timestamptz
-  updatedAt          DateTime  @default(now()) @updatedAt @db.Timestamptz
+  id                String    @id @default(uuid()) @db.Uuid
+  name              String    @db.VarChar(255)
+  email             String    @unique @db.VarChar(255)
+  password          String    @db.VarChar(255)
+  tier              TierLevel @default(TIER_C_STANDARD)
+  payoutWalletUSDT  String?   @db.VarChar(255)
+  customFeePercent  Decimal?  @db.Decimal(5,2)
+  hasRiskReserve    Boolean   @default(false)
+  reservePercent    Decimal   @default(0.00) @db.Decimal(5,2)
+  reserveDays       Int       @default(0)
+  status            String    @default("ACTIVE") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @db.Timestamptz
+  updatedAt         DateTime  @default(now()) @updatedAt @db.Timestamptz
 
-  transactions       Transaction[]
-  ledgers            Ledger[]
-  apiKeys            ApiKey[]
-  payoutRequests     PayoutRequest[]
-  stores             Store[]
-  gatewayVaults      GatewayVault[]
-  customers          Customer[] 
-  supportTickets     SupportTicket[]
-  tierRequests       TierUpgradeRequest[]
+  transactions      Transaction[]
+  ledgers           Ledger[]
+  apiKeys           ApiKey[]
+  payoutRequests    PayoutRequest[]
+  stores            Store[]
+  gatewayVaults     GatewayVault[]
+  customers         Customer[]
+  supportTickets    SupportTicket[]
+  tierRequests      TierUpgradeRequest[]
 }
 
 model Store {
-  id               String    @id @default(uuid()) @db.Uuid
-  merchantId       String    @db.Uuid
-  merchant         Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName     String?   @db.VarChar(255)
-  name             String    @db.VarChar(255)
-  logoUrl          String?   @db.VarChar(255)
-  primaryColor     String?   @default("#111111") @db.VarChar(50)
-  accentColor      String?   @default("#10b981") @db.VarChar(50)
-  successUrl       String?   @db.VarChar(255) 
-  supportEmail     String?   @db.VarChar(255) 
-  webhookUrl       String?   @db.VarChar(255)
-  webhookSecret    String?   @db.VarChar(255)
-  checkoutConfig   Json?     
-  isActive         Boolean   @default(true)
-  createdAt        DateTime  @default(now()) @db.Timestamptz
+  id              String    @id @default(uuid()) @db.Uuid
+  merchantId      String    @db.Uuid
+  merchant        Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchantName    String?   @db.VarChar(255)
+  name            String    @db.VarChar(255)
+  logoUrl         String?   @db.VarChar(255)
+  primaryColor    String?   @default("#111111") @db.VarChar(50)
+  accentColor     String?   @default("#10b981") @db.VarChar(50)
+  successUrl      String?   @db.VarChar(255)
+  supportEmail    String?   @db.VarChar(255)
+  webhookUrl      String?   @db.VarChar(255)
+  webhookSecret   String?   @db.VarChar(255)
+  checkoutConfig  Json?
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now()) @db.Timestamptz
 
-  transactions     Transaction[]
-  paymentLinks     PaymentLink[]
+  transactions    Transaction[]
+  paymentLinks    PaymentLink[]
+  products        Product[]
+}
+
+model Product {
+  id          String   @id @default(uuid()) @db.Uuid
+  storeId     String   @db.Uuid
+  store       Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  name        String   @db.VarChar(255)
+  slug        String   @unique @db.VarChar(255)
+  description String?  @db.Text
+  category    String?  @db.VarChar(255)
+
+  priceFiat   Decimal  @db.Decimal(15,2)
+  currency    String   @default("EUR") @db.VarChar(10)
+
+  images      String[]
+
+  isActive    Boolean  @default(true)
+  metadata    Json?
+
+  createdAt   DateTime @default(now()) @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz
+
+  paymentLinks PaymentLink[]
+
+  @@index([storeId])
 }
 
 model Customer {
@@ -82,20 +109,21 @@ model Customer {
   email        String   @db.VarChar(255)
   name         String?  @db.VarChar(255)
   phone        String?  @db.VarChar(50)
-  taxId        String?  @db.VarChar(50) 
+  taxId        String?  @db.VarChar(50)
   createdAt    DateTime @default(now()) @db.Timestamptz
   updatedAt    DateTime @default(now()) @updatedAt @db.Timestamptz
+
   transactions Transaction[]
-  @@unique([merchantId, email]) 
+  @@unique([merchantId, email])
 }
 
 model GatewayVault {
   id               String    @id @default(uuid()) @db.Uuid
   merchantId       String?   @db.Uuid
   merchant         Merchant? @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName     String?   @db.VarChar(255) 
-  providerId       String    @unique @db.VarChar(100) 
-  publicName       String?   @db.VarChar(100) 
+  merchantName     String?   @db.VarChar(255)
+  providerId       String    @unique @db.VarChar(100)
+  publicName       String?   @db.VarChar(100)
   authConfig       String    @db.Text
   webhookConfig    String?   @db.Text
   metadata         String?   @db.Text
@@ -106,60 +134,66 @@ model GatewayVault {
 }
 
 model Transaction {
-  id              String   @id @default(uuid()) @db.Uuid
-  merchantId      String   @db.Uuid
-  storeId         String?  @db.Uuid
-  customerId      String?  @db.Uuid
-  merchant        Merchant  @relation(fields: [merchantId], references: [id])
-  store           Store?    @relation(fields: [storeId], references: [id])
-  customer        Customer? @relation(fields: [customerId], references: [id])
-  merchantName    String?  @db.VarChar(255) 
-  storeName       String?  @db.VarChar(255) 
-  customerEmail   String?  @db.VarChar(255) 
-  amountFiat      Decimal  @db.Decimal(15,2)
-  currency        String   @db.VarChar(10)
-  exchangeRate    Decimal  @db.Decimal(10,6)
-  amountUSDT      Decimal  @db.Decimal(15,2)
-  feeUSDT         Decimal  @db.Decimal(15,2)
-  netAmountUSDT   Decimal  @db.Decimal(15,2)
-  providerUsed    String?  @db.VarChar(100)
-  providerTxId    String?  @db.VarChar(255)
-  status          String   @default("PENDING_GATEWAY") @db.VarChar(50)
-  metadata        Json?
-  createdAt       DateTime @default(now()) @db.Timestamptz
-  ledgers         Ledger[]
+  id            String   @id @default(uuid()) @db.Uuid
+  merchantId    String   @db.Uuid
+  storeId       String?  @db.Uuid
+  customerId    String?  @db.Uuid
+  merchant      Merchant  @relation(fields: [merchantId], references: [id])
+  store         Store?    @relation(fields: [storeId], references: [id])
+  customer      Customer? @relation(fields: [customerId], references: [id])
+  merchantName  String?  @db.VarChar(255)
+  storeName     String?  @db.VarChar(255)
+  customerEmail String?  @db.VarChar(255)
+  type          String   @default("CHECKOUT") @db.VarChar(50)
+  amountFiat    Decimal  @db.Decimal(15,2)
+  currency      String   @db.VarChar(10)
+  exchangeRate  Decimal  @db.Decimal(10,6)
+  amountUSDT    Decimal  @db.Decimal(15,2)
+  feeUSDT       Decimal  @db.Decimal(15,2)
+  netAmountUSDT Decimal  @db.Decimal(15,2)
+  providerUsed  String?  @db.VarChar(100)
+  providerTxId  String?  @db.VarChar(255)
+  status        String   @default("PENDING_GATEWAY") @db.VarChar(50)
+  metadata      Json?
+  createdAt     DateTime @default(now()) @db.Timestamptz
+
+  ledgers       Ledger[]
 }
 
 model Ledger {
-  id              String       @id @default(uuid()) @db.Uuid
-  merchantId      String       @db.Uuid
-  transactionId   String       @db.Uuid
-  merchant        Merchant     @relation(fields: [merchantId], references: [id])
-  transaction     Transaction  @relation(fields: [transactionId], references: [id])
-  merchantName    String?      @db.VarChar(255)
-  type            String       @db.VarChar(50)
-  amountUSDT      Decimal      @db.Decimal(15,2)
-  status          LedgerStatus @default(INCOMING)
-  incomingAt      DateTime     @default(now()) @db.Timestamptz
-  pendingAt       DateTime?    @db.Timestamptz
-  availableAt     DateTime?    @db.Timestamptz
-  clearedAt       DateTime?    @db.Timestamptz
-  notes           String?      @db.Text
+  id            String       @id @default(uuid()) @db.Uuid
+  merchantId    String       @db.Uuid
+  transactionId String       @db.Uuid
+  merchant      Merchant     @relation(fields: [merchantId], references: [id])
+  transaction   Transaction  @relation(fields: [transactionId], references: [id])
+  merchantName  String?      @db.VarChar(255)
+  type          String       @db.VarChar(50)
+  amountUSDT    Decimal      @db.Decimal(15,2)
+  status        LedgerStatus @default(INCOMING)
+  incomingAt    DateTime     @default(now()) @db.Timestamptz
+  pendingAt     DateTime?    @db.Timestamptz
+  availableAt   DateTime?    @db.Timestamptz
+  clearedAt     DateTime?    @db.Timestamptz
+  notes         String?      @db.Text
 }
 
 model PaymentLink {
   id              String    @id @default(uuid()) @db.Uuid
   storeId         String    @db.Uuid
   store           Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  storeName       String?   @db.VarChar(255) 
+
+  productId       String?   @db.Uuid
+  product         Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  storeName       String?   @db.VarChar(255)
   name            String    @db.VarChar(255)
   description     String?   @db.Text
   imageUrl        String?   @db.VarChar(255)
   amountFiat      Decimal   @db.Decimal(15,2)
   currency        String    @default("EUR") @db.VarChar(10)
   urlCode         String    @unique @db.VarChar(100)
-  isReusable      Boolean   @default(true) 
-  expiresAt       DateTime? @db.Timestamptz 
+  isReusable      Boolean   @default(true)
+  expiresAt       DateTime? @db.Timestamptz
   requireShipping Boolean   @default(false)
   requireTaxId    Boolean   @default(false)
   isActive        Boolean   @default(true)
@@ -170,7 +204,7 @@ model ApiKey {
   id           String   @id @default(uuid()) @db.Uuid
   merchantId   String   @db.Uuid
   merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName String?  @db.VarChar(255) 
+  merchantName String?  @db.VarChar(255)
   publicKey    String   @unique @db.VarChar(255)
   secretKey    String   @unique @db.VarChar(255)
   isActive     Boolean  @default(true)
@@ -192,21 +226,21 @@ model PayoutRequest {
 }
 
 model AdminUser {
-  id           String   @id @default(uuid()) @db.Uuid
-  name         String   @db.VarChar(255)
-  email        String   @unique @db.VarChar(255)
-  password     String   @db.VarChar(255) 
-  role         String   @default("SUPER_ADMIN") @db.VarChar(50) 
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now()) @db.Timestamptz
-  updatedAt    DateTime @default(now()) @updatedAt @db.Timestamptz
+  id         String   @id @default(uuid()) @db.Uuid
+  name       String   @db.VarChar(255)
+  email      String   @unique @db.VarChar(255)
+  password   String   @db.VarChar(255)
+  role       String   @default("SUPER_ADMIN") @db.VarChar(50)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now()) @db.Timestamptz
+  updatedAt  DateTime @default(now()) @updatedAt @db.Timestamptz
 }
 
 model SupportTicket {
   id           String   @id @default(uuid()) @db.Uuid
   merchantId   String   @db.Uuid
   merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName String?  @db.VarChar(255) 
+  merchantName String?  @db.VarChar(255)
   subject      String   @db.VarChar(255)
   message      String   @db.Text
   status       String   @default("OPEN") @db.VarChar(50)
@@ -219,7 +253,7 @@ model TierUpgradeRequest {
   id            String    @id @default(uuid()) @db.Uuid
   merchantId    String    @db.Uuid
   merchant      Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName  String?   @db.VarChar(255) 
+  merchantName  String?   @db.VarChar(255)
   requestedTier TierLevel
   reason        String?   @db.Text
   status        String    @default("PENDING") @db.VarChar(50)
