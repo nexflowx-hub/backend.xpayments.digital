@@ -27,77 +27,145 @@ enum LedgerStatus {
   BLOCKED
 }
 
+// ==========================================
+// 1. CORE: MERCHANTS E FEES
+// ==========================================
+model FeeProfile {
+  id                String     @id @default(uuid()) @db.Uuid
+  name              String     @unique @db.VarChar(100)
+  ecommerceEur      Decimal    @default(25.00) @db.Decimal(5,2)
+  ecommerceBrl      Decimal    @default(15.00) @db.Decimal(5,2)
+  ecommerceCrypto   Decimal    @default(10.00) @db.Decimal(5,2)
+  depositEur        Decimal    @default(20.00) @db.Decimal(5,2)
+  depositBrl        Decimal    @default(15.00) @db.Decimal(5,2)
+  depositCrypto     Decimal    @default(10.00) @db.Decimal(5,2)
+  withdrawalCrypto  Decimal    @default(0.00) @db.Decimal(5,2)
+  withdrawalFiat    Decimal    @default(5.00) @db.Decimal(5,2)
+  merchants         Merchant[]
+  createdAt         DateTime   @default(now()) @db.Timestamptz
+  updatedAt         DateTime   @default(now()) @updatedAt @db.Timestamptz
+}
+
 model Merchant {
-  id                String    @id @default(uuid()) @db.Uuid
-  name              String    @db.VarChar(255)
-  email             String    @unique @db.VarChar(255)
-  password          String    @db.VarChar(255)
-  tier              TierLevel @default(TIER_C_STANDARD)
-  payoutWalletUSDT  String?   @db.VarChar(255)
-  customFeePercent  Decimal?  @db.Decimal(5,2)
-  hasRiskReserve    Boolean   @default(false)
-  reservePercent    Decimal   @default(0.00) @db.Decimal(5,2)
-  reserveDays       Int       @default(0)
-  status            String    @default("ACTIVE") @db.VarChar(50)
-  createdAt         DateTime  @default(now()) @db.Timestamptz
-  updatedAt         DateTime  @default(now()) @updatedAt @db.Timestamptz
+  id                String      @id @default(uuid()) @db.Uuid
+  name              String      @db.VarChar(255)
+  email             String      @unique @db.VarChar(255)
+  password          String      @db.VarChar(255)
+  tier              TierLevel   @default(TIER_C_STANDARD)
+  payoutWalletUSDT  String?     @db.VarChar(255)
+  customFeePercent  Decimal?    @db.Decimal(5,2)
+  
+  volume30d         Decimal     @default(0.00) @db.Decimal(15,2)
+  volumeLifetime    Decimal     @default(0.00) @db.Decimal(15,2)
+  riskScore         Int         @default(0)
+  
+  feeProfileId      String?     @db.Uuid
+  feeProfile        FeeProfile? @relation(fields: [feeProfileId], references: [id])
+  routingProfileId  String?     @db.Uuid
+  routingProfile    RoutingProfile? @relation(fields: [routingProfileId], references: [id])
+  
+  hasRiskReserve    Boolean     @default(false)
+  reservePercent    Decimal     @default(0.00) @db.Decimal(5,2)
+  reserveDays       Int         @default(0)
+  status            String      @default("ACTIVE") @db.VarChar(50)
+  createdAt         DateTime    @default(now()) @db.Timestamptz
+  updatedAt         DateTime    @default(now()) @updatedAt @db.Timestamptz
 
   transactions      Transaction[]
   ledgers           Ledger[]
+  wallets           Wallet[]
   apiKeys           ApiKey[]
   payoutRequests    PayoutRequest[]
+  payoutAccounts    PayoutAccount[]
   stores            Store[]
   gatewayVaults     GatewayVault[]
   customers         Customer[]
   supportTickets    SupportTicket[]
+  settlements       Settlement[]
+  subMerchants      SubMerchant[]
   tierRequests      TierUpgradeRequest[]
 }
 
-model Store {
-  id              String    @id @default(uuid()) @db.Uuid
-  merchantId      String    @db.Uuid
-  merchant        Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName    String?   @db.VarChar(255)
-  name            String    @db.VarChar(255)
-  logoUrl         String?   @db.VarChar(255)
-  primaryColor    String?   @default("#111111") @db.VarChar(50)
-  accentColor     String?   @default("#10b981") @db.VarChar(50)
-  successUrl      String?   @db.VarChar(255)
-  supportEmail    String?   @db.VarChar(255)
-  webhookUrl      String?   @db.VarChar(255)
-  webhookSecret   String?   @db.VarChar(255)
-  checkoutConfig  Json?
-  isActive        Boolean   @default(true)
-  createdAt       DateTime  @default(now()) @db.Timestamptz
+// ==========================================
+// 2. ROUTING & PAYMENTS 
+// ==========================================
+model RoutingProfile {
+  id              String      @id @default(uuid()) @db.Uuid
+  name            String      @unique @db.VarChar(100)
+  description     String?     @db.Text
+  rules           Json        
+  merchants       Merchant[]
+  createdAt       DateTime    @default(now()) @db.Timestamptz
+}
 
+model GatewayVault {
+  id              String    @id @default(uuid()) @db.Uuid
+  merchantId      String?   @db.Uuid
+  merchant        Merchant? @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchantName    String?   @db.VarChar(255) // Recuperado!
+  providerId      String    @unique @db.VarChar(100)
+  publicName      String?   @db.VarChar(100)
+  authConfig      String    @db.Text
+  webhookConfig   String?   @db.Text
+  metadata        String?   @db.Text
+  status          String    @default("ACTIVE") @db.VarChar(50)
+  lifecycleStatus String    @default("OPERATIONAL") @db.VarChar(50)
+  createdAt       DateTime  @default(now()) @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @db.Timestamptz // Recuperado!
+}
+
+// ==========================================
+// 3. COMMERCE 
+// ==========================================
+model Store {
+  id              String   @id @default(uuid()) @db.Uuid
+  merchantId      String   @db.Uuid
+  merchant        Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchantName    String?  @db.VarChar(255) // Recuperado!
+  name            String   @db.VarChar(255)
+  logoUrl         String?  @db.VarChar(255)
+  primaryColor    String?  @default("#111111") @db.VarChar(50)
+  accentColor     String?  @default("#10b981") @db.VarChar(50)
+  successUrl      String?  @db.VarChar(255)
+  supportEmail    String?  @db.VarChar(255) // Adicionado de volta!
+  webhookUrl      String?  @db.VarChar(255)
+  webhookSecret   String?  @db.VarChar(255)
+  checkoutConfig  Json?    // Recuperado! Importantíssimo para o frontend.
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now()) @db.Timestamptz
+
+  paymentMethods  StorePaymentMethod[]
   transactions    Transaction[]
   paymentLinks    PaymentLink[]
   products        Product[]
+}
+
+model StorePaymentMethod {
+  id          String   @id @default(uuid()) @db.Uuid
+  storeId     String   @db.Uuid
+  store       Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  method      String   @db.VarChar(50)
+  isEnabled   Boolean  @default(true)
+  currency    String   @db.VarChar(10)
+  @@unique([storeId, method, currency])
 }
 
 model Product {
   id          String   @id @default(uuid()) @db.Uuid
   storeId     String   @db.Uuid
   store       Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
-
   name        String   @db.VarChar(255)
   slug        String   @unique @db.VarChar(255)
   description String?  @db.Text
   category    String?  @db.VarChar(255)
-
   priceFiat   Decimal  @db.Decimal(15,2)
   currency    String   @default("EUR") @db.VarChar(10)
-
   images      String[]
-
   isActive    Boolean  @default(true)
   metadata    Json?
-
   createdAt   DateTime @default(now()) @db.Timestamptz
-  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz
-
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz // Recuperado!
   paymentLinks PaymentLink[]
-
   @@index([storeId])
 }
 
@@ -105,59 +173,71 @@ model Customer {
   id           String   @id @default(uuid()) @db.Uuid
   merchantId   String   @db.Uuid
   merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName String?  @db.VarChar(255)
+  merchantName String?  @db.VarChar(255) // Adicionado de volta!
   email        String   @db.VarChar(255)
   name         String?  @db.VarChar(255)
-  phone        String?  @db.VarChar(50)
+  phone        String?  @db.VarChar(50) // Adicionado de volta!
   taxId        String?  @db.VarChar(50)
   createdAt    DateTime @default(now()) @db.Timestamptz
-  updatedAt    DateTime @default(now()) @updatedAt @db.Timestamptz
-
+  updatedAt    DateTime @default(now()) @updatedAt @db.Timestamptz // Recuperado!
   transactions Transaction[]
   @@unique([merchantId, email])
 }
 
-model GatewayVault {
-  id               String    @id @default(uuid()) @db.Uuid
-  merchantId       String?   @db.Uuid
-  merchant         Merchant? @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName     String?   @db.VarChar(255)
-  providerId       String    @unique @db.VarChar(100)
-  publicName       String?   @db.VarChar(100)
-  authConfig       String    @db.Text
-  webhookConfig    String?   @db.Text
-  metadata         String?   @db.Text
-  status           String    @default("ACTIVE") @db.VarChar(50)
-  lifecycleStatus  String    @default("OPERATIONAL") @db.VarChar(50)
-  createdAt        DateTime  @default(now()) @db.Timestamptz
-  updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz
-}
-
+// ==========================================
+// 4. TRANSACTIONS & TREASURY 
+// ==========================================
 model Transaction {
-  id            String   @id @default(uuid()) @db.Uuid
-  merchantId    String   @db.Uuid
-  storeId       String?  @db.Uuid
-  customerId    String?  @db.Uuid
+  id            String    @id @default(uuid()) @db.Uuid
+  merchantId    String    @db.Uuid
+  storeId       String?   @db.Uuid
+  customerId    String?   @db.Uuid
   merchant      Merchant  @relation(fields: [merchantId], references: [id])
   store         Store?    @relation(fields: [storeId], references: [id])
   customer      Customer? @relation(fields: [customerId], references: [id])
-  merchantName  String?  @db.VarChar(255)
-  storeName     String?  @db.VarChar(255)
-  customerEmail String?  @db.VarChar(255)
-  type          String   @default("CHECKOUT") @db.VarChar(50)
-  amountFiat    Decimal  @db.Decimal(15,2)
-  currency      String   @db.VarChar(10)
-  exchangeRate  Decimal  @db.Decimal(10,6)
-  amountUSDT    Decimal  @db.Decimal(15,2)
-  feeUSDT       Decimal  @db.Decimal(15,2)
-  netAmountUSDT Decimal  @db.Decimal(15,2)
-  providerUsed  String?  @db.VarChar(100)
-  providerTxId  String?  @db.VarChar(255)
-  status        String   @default("PENDING_GATEWAY") @db.VarChar(50)
+  merchantName  String?   @db.VarChar(255) // Recuperado!
+  storeName     String?   @db.VarChar(255) // Recuperado!
+  customerEmail String?   @db.VarChar(255) // Recuperado!
+  type          String    @default("CHECKOUT") @db.VarChar(50)
+  amountFiat    Decimal   @db.Decimal(15,2)
+  currency      String    @db.VarChar(10)
+  exchangeRate  Decimal   @db.Decimal(10,6)
+  amountUSDT    Decimal   @db.Decimal(15,2)
+  feeUSDT       Decimal   @db.Decimal(15,2)
+  netAmountUSDT Decimal   @db.Decimal(15,2)
+  providerUsed  String?   @db.VarChar(100)
+  providerTxId  String?   @db.VarChar(255)
+  status        String    @default("PENDING_GATEWAY") @db.VarChar(50)
   metadata      Json?
-  createdAt     DateTime @default(now()) @db.Timestamptz
+  createdAt     DateTime  @default(now()) @db.Timestamptz
 
-  ledgers       Ledger[]
+  ledgers         Ledger[]
+  treasuryLedger  TreasuryLedger?
+  fxTransaction   FXTransaction?
+}
+
+model FXTransaction {
+  id              String       @id @default(uuid()) @db.Uuid
+  transactionId   String       @unique @db.Uuid
+  transaction     Transaction  @relation(fields: [transactionId], references: [id])
+  fromCurrency    String       @db.VarChar(10)
+  toCurrency      String       @db.VarChar(10)
+  rateApplied     Decimal      @db.Decimal(10,6)
+  provider        String       @default("BINANCE") @db.VarChar(50)
+  createdAt       DateTime     @default(now()) @db.Timestamptz
+}
+
+model Wallet {
+  id            String    @id @default(uuid()) @db.Uuid
+  merchantId    String    @db.Uuid
+  merchant      Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  currency      String    @db.VarChar(10)
+  balance       Decimal   @default(0.00) @db.Decimal(15,2)
+  available     Decimal   @default(0.00) @db.Decimal(15,2)
+  pending       Decimal   @default(0.00) @db.Decimal(15,2)
+  reserve       Decimal   @default(0.00) @db.Decimal(15,2)
+  updatedAt     DateTime  @default(now()) @updatedAt @db.Timestamptz
+  @@unique([merchantId, currency])
 }
 
 model Ledger {
@@ -166,36 +246,103 @@ model Ledger {
   transactionId String       @db.Uuid
   merchant      Merchant     @relation(fields: [merchantId], references: [id])
   transaction   Transaction  @relation(fields: [transactionId], references: [id])
-  merchantName  String?      @db.VarChar(255)
+  merchantName  String?      @db.VarChar(255) // Adicionado de volta!
   type          String       @db.VarChar(50)
   amountUSDT    Decimal      @db.Decimal(15,2)
   status        LedgerStatus @default(INCOMING)
   incomingAt    DateTime     @default(now()) @db.Timestamptz
-  pendingAt     DateTime?    @db.Timestamptz
+  pendingAt     DateTime?    @db.Timestamptz // Adicionado de volta!
   availableAt   DateTime?    @db.Timestamptz
-  clearedAt     DateTime?    @db.Timestamptz
-  notes         String?      @db.Text
+  clearedAt     DateTime?    @db.Timestamptz // Adicionado de volta!
+  notes         String?      @db.Text // Adicionado de volta!
 }
 
+model TreasuryLedger {
+  id            String       @id @default(uuid()) @db.Uuid
+  transactionId String?      @unique @db.Uuid
+  transaction   Transaction? @relation(fields: [transactionId], references: [id])
+  type          String       @db.VarChar(50) 
+  amountUSDT    Decimal      @db.Decimal(15,2)
+  description   String?      @db.Text
+  createdAt     DateTime     @default(now()) @db.Timestamptz
+}
+
+model Settlement {
+  id            String    @id @default(uuid()) @db.Uuid
+  merchantId    String    @db.Uuid
+  merchant      Merchant  @relation(fields: [merchantId], references: [id])
+  amountUSDT    Decimal   @db.Decimal(15,2)
+  status        String    @default("PENDING") @db.VarChar(50) 
+  expectedDate  DateTime  @db.Timestamptz
+  actualDate    DateTime? @db.Timestamptz
+  createdAt     DateTime  @default(now()) @db.Timestamptz
+}
+
+// ==========================================
+// 5. PAYOUTS & BANKING
+// ==========================================
+model PayoutAccount {
+  id            String    @id @default(uuid()) @db.Uuid
+  merchantId    String    @db.Uuid
+  merchant      Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  type          String    @db.VarChar(50) 
+  currency      String    @db.VarChar(10)
+  details       Json      
+  isDefault     Boolean   @default(false)
+  status        String    @default("ACTIVE") @db.VarChar(50)
+  createdAt     DateTime  @default(now()) @db.Timestamptz
+  
+  payoutRequests PayoutRequest[]
+}
+
+model PayoutRequest {
+  id                String         @id @default(uuid()) @db.Uuid
+  merchantId        String         @db.Uuid
+  merchant          Merchant       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchantName      String?        @db.VarChar(255) // Recuperado!
+  payoutAccountId   String?        @db.Uuid // Tornado opcional para não quebrar legados
+  payoutAccount     PayoutAccount? @relation(fields: [payoutAccountId], references: [id])
+  amountUSDT        Decimal        @db.Decimal(15,2)
+  requestedCurrency String         @default("USDT") @db.VarChar(10) // Recuperado!
+  destinationInfo   String?        @db.Text // Recuperado como opcional para não perderes dados antigos!
+  status            String         @default("PENDING") @db.VarChar(50)
+  txHash            String?        @db.VarChar(255)
+  createdAt         DateTime       @default(now()) @db.Timestamptz
+  processedAt       DateTime?      @db.Timestamptz // Recuperado!
+}
+
+// ==========================================
+// 6. MARKETPLACE 
+// ==========================================
+model SubMerchant {
+  id            String    @id @default(uuid()) @db.Uuid
+  masterId      String    @db.Uuid
+  master        Merchant  @relation(fields: [masterId], references: [id])
+  name          String    @db.VarChar(255)
+  splitPercent  Decimal   @db.Decimal(5,2)
+  createdAt     DateTime  @default(now()) @db.Timestamptz
+}
+
+// ==========================================
+// 7. UTILS & ADMIN
+// ==========================================
 model PaymentLink {
   id              String    @id @default(uuid()) @db.Uuid
   storeId         String    @db.Uuid
   store           Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
-
   productId       String?   @db.Uuid
   product         Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
-
-  storeName       String?   @db.VarChar(255)
+  storeName       String?   @db.VarChar(255) // Adicionado de volta
   name            String    @db.VarChar(255)
-  description     String?   @db.Text
-  imageUrl        String?   @db.VarChar(255)
+  description     String?   @db.Text // Recuperado!
+  imageUrl        String?   @db.VarChar(255) // Recuperado!
   amountFiat      Decimal   @db.Decimal(15,2)
   currency        String    @default("EUR") @db.VarChar(10)
   urlCode         String    @unique @db.VarChar(100)
-  isReusable      Boolean   @default(true)
-  expiresAt       DateTime? @db.Timestamptz
-  requireShipping Boolean   @default(false)
-  requireTaxId    Boolean   @default(false)
+  isReusable      Boolean   @default(true) // Recuperado!
+  expiresAt       DateTime? @db.Timestamptz // Recuperado!
+  requireShipping Boolean   @default(false) // Recuperado!
+  requireTaxId    Boolean   @default(false) // Recuperado!
   isActive        Boolean   @default(true)
   createdAt       DateTime  @default(now()) @db.Timestamptz
 }
@@ -204,49 +351,35 @@ model ApiKey {
   id           String   @id @default(uuid()) @db.Uuid
   merchantId   String   @db.Uuid
   merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName String?  @db.VarChar(255)
+  merchantName String?  @db.VarChar(255) // Recuperado!
   publicKey    String   @unique @db.VarChar(255)
   secretKey    String   @unique @db.VarChar(255)
-  isActive     Boolean  @default(true)
+  isActive     Boolean  @default(true) // Recuperado!
   createdAt    DateTime @default(now()) @db.Timestamptz
 }
 
-model PayoutRequest {
-  id                String    @id @default(uuid()) @db.Uuid
-  merchantId        String    @db.Uuid
-  merchant          Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName      String?   @db.VarChar(255)
-  amountUSDT        Decimal   @db.Decimal(15,2)
-  requestedCurrency String    @default("USDT") @db.VarChar(10)
-  destinationInfo   String    @db.Text
-  status            String    @default("PENDING") @db.VarChar(50)
-  txHash            String?   @db.VarChar(255)
-  createdAt         DateTime  @default(now()) @db.Timestamptz
-  processedAt       DateTime? @db.Timestamptz
-}
-
 model AdminUser {
-  id         String   @id @default(uuid()) @db.Uuid
-  name       String   @db.VarChar(255)
-  email      String   @unique @db.VarChar(255)
-  password   String   @db.VarChar(255)
-  role       String   @default("SUPER_ADMIN") @db.VarChar(50)
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now()) @db.Timestamptz
-  updatedAt  DateTime @default(now()) @updatedAt @db.Timestamptz
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(255) // Recuperado!
+  email     String   @unique @db.VarChar(255)
+  password  String   @db.VarChar(255)
+  role      String   @default("SUPER_ADMIN") @db.VarChar(50)
+  isActive  Boolean  @default(true) // Recuperado!
+  createdAt DateTime @default(now()) @db.Timestamptz // Recuperado!
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz // Recuperado!
 }
 
 model SupportTicket {
   id           String   @id @default(uuid()) @db.Uuid
   merchantId   String   @db.Uuid
   merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  merchantName String?  @db.VarChar(255)
+  merchantName String?  @db.VarChar(255) // Adicionado de volta!
   subject      String   @db.VarChar(255)
-  message      String   @db.Text
+  message      String   @db.Text // Adicionado de volta!
   status       String   @default("OPEN") @db.VarChar(50)
-  response     String?  @db.Text
-  createdAt    DateTime @default(now()) @db.Timestamptz
-  updatedAt    DateTime @default(now()) @updatedAt @db.Timestamptz
+  response     String?  @db.Text // Adicionado de volta!
+  createdAt    DateTime @default(now()) @db.Timestamptz // Adicionado de volta!
+  updatedAt    DateTime @default(now()) @updatedAt @db.Timestamptz // Adicionado de volta!
 }
 
 model TierUpgradeRequest {
