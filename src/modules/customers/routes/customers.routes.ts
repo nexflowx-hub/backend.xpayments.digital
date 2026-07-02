@@ -1,13 +1,10 @@
 import { Router } from 'express';
-import { getCustomers, getCustomerById } from '../controllers/customers.controller';
+import { getCustomers } from '../controllers/customers.controller';
 import { authenticateMerchant } from '../../../middleware/auth.middleware';
 
 const router = Router();
 
-// 🔴 O MIDDLEWARE É INJETADO AQUI. Ninguém passa sem Token válido.
-router.use(authenticateMerchant);
-
-router.get('/', getCustomers);
-router.get('/:id', getCustomerById);
+// Rota protegida: Devolve a lista de clientes com o LTV e estatísticas avançadas
+router.get('/', authenticateMerchant, getCustomers);
 
 export default router;

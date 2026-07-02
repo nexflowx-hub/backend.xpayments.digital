@@ -4,13 +4,13 @@ import { authenticateMerchant } from '../../../middleware/auth.middleware';
 
 const router = Router();
 
-// 🔴 TODAS ESTAS ROTAS ESTÃO AGORA BLINDADAS
-router.use(authenticateMerchant);
+// 🔴 CORREÇÃO DO CADEADO:
+// Aplicamos a segurança rota a rota. Isto impede que o middleware 
+// "transborde" para o Checkout e para os Webhooks que estão abaixo no app.ts.
 
-// Mantemos o padrão das rotas para não quebrar o Frontend, mas o Backend ignora o :id por segurança
-router.get('/merchant/:id/dashboard', getDashboard);
-router.get('/merchant/:id/transactions', getTransactions);
-router.get('/wallets', getWallets);
-router.post('/wallets/deposit', depositWallet);
+router.get('/merchant/:id/dashboard', authenticateMerchant, getDashboard);
+router.get('/merchant/:id/transactions', authenticateMerchant, getTransactions);
+router.get('/wallets', authenticateMerchant, getWallets);
+router.post('/wallets/deposit', authenticateMerchant, depositWallet);
 
 export default router;
