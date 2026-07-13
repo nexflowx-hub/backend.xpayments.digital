@@ -1,0 +1,231 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Merchant {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String   @unique
+  name         String
+  company      String?
+  tier         String   @default("TIER_C_STANDARD")
+  status       String   @default("pending")
+  kycStatus    String   @default("not_submitted") @map("kyc_status")
+  riskScore    Int      @default(0) @map("risk_score")
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  wallets          Wallet[]
+  transactions     Transaction[]
+  customers        Customer[]
+  products         Product[]
+  stores           Store[]
+  checkoutSessions CheckoutSession[]
+  gatewayVaults    GatewayVault[]
+
+  @@map("merchants")
+}
+
+model Wallet {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId String   @map("merchant_id") @db.Uuid
+  currency   String
+  label      String?
+  balance    Decimal  @default(0.00) @db.Decimal(18, 2)
+  available  Decimal  @default(0.00) @db.Decimal(18, 2)
+  reserved   Decimal  @default(0.00) @db.Decimal(18, 2)
+  type       String   @default("fiat")
+  cardLast4  String?  @map("card_last4")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  merchant  Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  movements WalletMovement[]
+
+  @@unique([merchantId, currency])
+  @@map("wallets")
+}
+
+model WalletMovement {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  walletId   String   @map("wallet_id") @db.Uuid
+  merchantId String   @map("merchant_id") @db.Uuid
+  currency   String
+  type       String
+  direction  String
+  amount     Decimal  @db.Decimal(18, 2)
+  status     String   @default("em_transito")
+  reference  String?
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@map("wallet_movements")
+}
+
+model Transaction {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId     String   @map("merchant_id") @db.Uuid
+  storeId        String?  @map("store_id") @db.Uuid
+  gatewayVaultId String?  @map("gateway_vault_id") @db.Uuid
+  providerId     String?  @map("provider_id")
+  reference      String   @unique
+  customer       String?
+  customerEmail  String?  @map("customer_email")
+  amount         Decimal  @db.Decimal(18, 2)
+  currency       String
+  amountEur      Decimal? @map("amount_eur") @db.Decimal(18, 2)
+  status         String
+  method         String
+  country        String?
+  gateway        String?
+  riskScore      Int      @default(0) @map("risk_score")
+  fee            Decimal? @db.Decimal(18, 2)
+  metadata       Json?
+  rawRequest     Json?    @map("raw_request")
+  rawResponse    Json?    @map("raw_response")
+  webhookSentLog Json?    @map("webhook_sent_log")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  merchant     Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  store        Store?        @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  gatewayVault GatewayVault? @relation(fields: [gatewayVaultId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId])
+  @@index([storeId])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("transactions")
+}
+
+model Customer {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId String   @map("merchant_id") @db.Uuid
+  name       String?
+  email      String?
+  country    String?
+  ltv        Decimal  @default(0.00) @db.Decimal(18, 2)
+  avgOrder   Decimal  @default(0.00) @map("avg_order") @db.Decimal(18, 2)
+  orders     Int      @default(0)
+  segment    String   @default("new")
+  status     String   @default("active")
+  firstSeen  DateTime @default(now()) @map("first_seen") @db.Timestamptz
+  lastSeen   DateTime @default(now()) @map("last_seen") @db.Timestamptz
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@map("customers")
+}
+
+model Product {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId  String   @map("merchant_id") @db.Uuid
+  name        String
+  description String?
+  price       Decimal  @db.Decimal(18, 2)
+  currency    String   @default("EUR")
+  active      Boolean  @default(true)
+  sales       Int      @default(0)
+  stock       Int?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@map("products")
+}
+
+model Store {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId   String   @map("merchant_id") @db.Uuid
+  storeCode    String   @unique @map("store_code")
+  name         String
+  domain       String?
+  status       String   @default("draft")
+  revenue      Decimal  @default(0.00) @db.Decimal(18, 2)
+  currency     String   @default("EUR")
+  routingRules Json?    @map("routing_rules")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  merchant         Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  checkoutSessions CheckoutSession[]
+  gatewayVaults    GatewayVault[]
+  transactions     Transaction[]
+  apiKeys          ApiKey[]
+  webhooks         Webhook[]
+
+  @@map("stores")
+}
+
+model ApiKey {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId     String    @map("store_id") @db.Uuid
+  name        String
+  key         String    @unique
+  scopes      String[]
+  environment String    @default("test")
+  lastUsedAt  DateTime? @map("last_used_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
+}
+
+model Webhook {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId        String    @map("store_id") @db.Uuid
+  url            String
+  events         String[]
+  status         String    @default("active")
+  secret         String?
+  successRate    Decimal   @default(100.00) @map("success_rate") @db.Decimal(5, 2)
+  lastDeliveryAt DateTime? @map("last_delivery_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@map("webhooks")
+}
+
+model CheckoutSession {
+  id             String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId     String  @map("merchant_id") @db.Uuid
+  storeId        String  @map("store_id") @db.Uuid
+  gatewayVaultId String? @map("gateway_vault_id") @db.Uuid
+  amount         Decimal @db.Decimal(18, 2)
+  currency       String  @default("EUR")
+  status         String  @default("pending")
+  reference      String?
+  customerEmail  String? @map("customer_email")
+  metadata       Json?
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz
+
+  merchant     Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  store        Store         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  gatewayVault GatewayVault? @relation(fields: [gatewayVaultId], references: [id])
+
+  @@map("checkout_sessions")
+}
+
+model GatewayVault {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId  String   @map("merchant_id") @db.Uuid
+  storeId     String?  @map("store_id") @db.Uuid
+  provider    String
+  credentials Json
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  merchant         Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  store            Store?            @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  transactions     Transaction[]
+  checkoutSessions CheckoutSession[] // ADICIONADO AQUI
+  @@map("gateway_vaults")
+}

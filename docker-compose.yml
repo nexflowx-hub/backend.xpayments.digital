@@ -1,0 +1,13 @@
+services:
+  xpayments-api-v3:
+    build: .
+    container_name: xpayments-api-v3
+    ports:
+      - "127.0.0.1:3001:8084"
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      # Na V3, apenas o /app/src é mapeado para dev, o resto vive na imagem compilada
+      - ./src:/app/src
+      - ./prisma:/app/prisma

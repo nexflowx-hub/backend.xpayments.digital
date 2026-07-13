@@ -1,0 +1,12 @@
+import { Router } from 'express';
+import * as ctrl from '../controllers/commerce.controller';
+const router = Router();
+router.get('/transactions', (ctrl as any).getTransactions);
+router.get('/products', (ctrl as any).getProducts);
+router.post('/products', (ctrl as any).createProduct);
+router.delete('/products/:id', (ctrl as any).deleteProduct);
+router.get('/stores', (ctrl as any).getStores);
+router.get('/payment-links', (ctrl as any).getPaymentLinks);
+router.get('/invoices', (ctrl as any).getInvoices);
+router.get('/subscriptions', (ctrl as any).getSubscriptions);
+export default router;

@@ -1,0 +1,12 @@
+import { Router } from 'express';
+import * as ctrl from '../controllers/admin.controller';
+const router = Router();
+router.get('/admin/merchants', (ctrl as any).getMerchants);
+router.post('/admin/merchants/:id/status', (ctrl as any).updateMerchantStatus);
+router.get('/admin/kyc', (ctrl as any).getKycReviews);
+router.post('/admin/kyc/:id/approved', (ctrl as any).approveKyc);
+router.post('/admin/kyc/:id/rejected', (ctrl as any).rejectKyc);
+router.get('/admin/treasury/overview', (ctrl as any).getTreasuryOverview);
+router.get('/admin/revenue', (ctrl as any).getRevenue);
+router.get('/admin/health', (ctrl as any).getHealth);
+export default router;
