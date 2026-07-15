@@ -150,6 +150,8 @@ model Store {
   revenue      Decimal  @default(0.00) @db.Decimal(18, 2)
   currency     String   @default("EUR")
   routingRules Json?    @map("routing_rules")
+  logoUrl      String?  @map("logo_url")
+  theme        String   @default("light")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   merchant         Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
@@ -194,15 +196,16 @@ model Webhook {
 }
 
 model CheckoutSession {
-  id             String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId     String  @map("merchant_id") @db.Uuid
-  storeId        String  @map("store_id") @db.Uuid
-  gatewayVaultId String? @map("gateway_vault_id") @db.Uuid
-  amount         Decimal @db.Decimal(18, 2)
-  currency       String  @default("EUR")
-  status         String  @default("pending")
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId     String   @map("merchant_id") @db.Uuid
+  storeId        String   @map("store_id") @db.Uuid
+  gatewayVaultId String?  @map("gateway_vault_id") @db.Uuid
+  amount         Decimal  @db.Decimal(18, 2)
+  checkoutUrl    String?  @map("checkout_url")
+  currency       String   @default("EUR")
+  status         String   @default("pending")
   reference      String?
-  customerEmail  String? @map("customer_email")
+  customerEmail  String?  @map("customer_email")
   metadata       Json?
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
   expiresAt      DateTime @map("expires_at") @db.Timestamptz
@@ -226,6 +229,6 @@ model GatewayVault {
   merchant         Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   store            Store?            @relation(fields: [storeId], references: [id], onDelete: Cascade)
   transactions     Transaction[]
-  checkoutSessions CheckoutSession[] // ADICIONADO AQUI
+  checkoutSessions CheckoutSession[]
   @@map("gateway_vaults")
 }
