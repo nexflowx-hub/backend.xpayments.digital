@@ -1,12 +1,21 @@
 import { Router } from 'express';
+
 import * as ctrl from '../controllers/commerce.controller';
+
 const router = Router();
-router.get('/transactions', (ctrl as any).getTransactions);
-router.get('/products', (ctrl as any).getProducts);
-router.post('/products', (ctrl as any).createProduct);
-router.delete('/products/:id', (ctrl as any).deleteProduct);
-router.get('/stores', (ctrl as any).getStores);
-router.get('/payment-links', (ctrl as any).getPaymentLinks);
-router.get('/invoices', (ctrl as any).getInvoices);
-router.get('/subscriptions', (ctrl as any).getSubscriptions);
+
+router.get('/transactions', ctrl.getTransactions);
+
+router.get('/stores', ctrl.getStores);
+
+router.get('/products', ctrl.getProducts);
+router.post('/products', ctrl.createProduct);
+router.delete('/products/:id', ctrl.deleteProduct);
+
+router.get('/customers', ctrl.getCustomers);
+
+router.get('/payment-links', ctrl.getPaymentLinks);
+router.get('/invoices', ctrl.getInvoices);
+router.get('/subscriptions', ctrl.getSubscriptions);
+
 export default router;
