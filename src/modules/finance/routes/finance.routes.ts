@@ -2,9 +2,11 @@ import { Router } from 'express';
 
 import {
   getFinanceOverview,
-  getFinanceReleases,
   getFinanceStores
 } from '../controllers/finance.controller';
+import {
+  getProviderFinanceReleases
+} from '../controllers/finance-releases.controller';
 
 const router = Router();
 
@@ -20,7 +22,7 @@ router.get(
 
 router.get(
   '/releases',
-  getFinanceReleases
+  getProviderFinanceReleases
 );
 
 export default router;
