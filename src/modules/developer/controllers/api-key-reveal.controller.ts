@@ -3,6 +3,17 @@ import { Response } from 'express';
 import prisma from '../../../core/prisma';
 import { AuthRequest } from '../../../middleware/auth.middleware';
 
+const REVEAL_WINDOW_MS = 60_000;
+const REVEAL_MAX_ATTEMPTS = 5;
+
+const revealAttempts = new Map<
+  string,
+  {
+    count: number;
+    windowStartedAt: number;
+  }
+>();
+
 const getParamId = (
   value: string | string[]
 ): string =>
@@ -10,10 +21,66 @@ const getParamId = (
     ? value[0]
     : String(value);
 
+const consumeRevealAttempt = (
+  key: string
+): {
+  allowed: boolean;
+  retryAfterSeconds: number;
+} => {
+  const now = Date.now();
+  const current = revealAttempts.get(key);
+
+  if (
+    !current ||
+    now - current.windowStartedAt >=
+      REVEAL_WINDOW_MS
+  ) {
+    revealAttempts.set(key, {
+      count: 1,
+      windowStartedAt: now
+    });
+
+    return {
+      allowed: true,
+      retryAfterSeconds: 0
+    };
+  }
+
+  if (current.count >= REVEAL_MAX_ATTEMPTS) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(
+        1,
+        Math.ceil(
+          (
+            REVEAL_WINDOW_MS -
+            (now - current.windowStartedAt)
+          ) / 1000
+        )
+      )
+    };
+  }
+
+  current.count += 1;
+  revealAttempts.set(key, current);
+
+  return {
+    allowed: true,
+    retryAfterSeconds: 0
+  };
+};
+
 export const revealApiKey = async (
   req: AuthRequest,
   res: Response
 ) => {
+  res.setHeader(
+    'Cache-Control',
+    'no-store, no-cache, must-revalidate, private'
+  );
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const merchantId =
     req.merchantId || req.user?.id;
 
@@ -30,6 +97,44 @@ export const revealApiKey = async (
   const apiKeyId = getParamId(
     req.params.id
   );
+
+  const rateLimitKey = [
+    String(merchantId),
+    apiKeyId,
+    req.ip || 'unknown'
+  ].join(':');
+
+  const rateLimit =
+    consumeRevealAttempt(rateLimitKey);
+
+  if (!rateLimit.allowed) {
+    res.setHeader(
+      'Retry-After',
+      String(rateLimit.retryAfterSeconds)
+    );
+
+    console.warn(
+      '[API_KEY_REVEAL_RATE_LIMITED]',
+      {
+        merchantId: String(merchantId),
+        apiKeyId,
+        ip: req.ip || null,
+        retryAfterSeconds:
+          rateLimit.retryAfterSeconds,
+        limitedAt:
+          new Date().toISOString()
+      }
+    );
+
+    return res.status(429).json({
+      success: false,
+      error: {
+        code: 'API_KEY_REVEAL_RATE_LIMITED',
+        message:
+          'Muitas tentativas de visualização. Tente novamente dentro de instantes.'
+      }
+    });
+  }
 
   try {
     const apiKey =
@@ -73,6 +178,9 @@ export const revealApiKey = async (
           apiKey.store.id,
         storeCode:
           apiKey.store.storeCode,
+        ip: req.ip || null,
+        userAgent:
+          req.get('user-agent') || null,
         revealedAt:
           new Date().toISOString()
       }
