@@ -120,8 +120,8 @@ async function main() {
           )`}
 
     ORDER BY
-      store.store_code,
-      transaction_record.id
+      store_code,
+      transaction_id
   `);
 
   console.log(
