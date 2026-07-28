@@ -51,12 +51,23 @@ app.use(cors({
     'Authorization',
     'Content-Type',
     'x-api-key',
-    'Accept'
+    'Accept',
+    'Stripe-Signature'
   ]
 }));
 
 app.use(express.json({
-  limit: '256kb'
+  limit: '256kb',
+
+  verify(req, _res, buffer) {
+    if (
+      req.originalUrl.startsWith(
+        '/api/v1/payments/webhooks/stripe'
+      )
+    ) {
+      (req as any).rawBody = Buffer.from(buffer);
+    }
+  }
 }));
 
 app.use((req, res, next) => {
