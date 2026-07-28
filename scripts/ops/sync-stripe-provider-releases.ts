@@ -85,6 +85,9 @@ async function main() {
         transaction_record.provider_id
           AS provider_id,
 
+        transaction_record.created_at
+          AS transaction_created_at,
+
         store.store_code,
         store.name AS store_name,
 
@@ -135,6 +138,7 @@ async function main() {
 
       ORDER BY
         store_code,
+        transaction_created_at DESC,
         transaction_id
     `);
 
