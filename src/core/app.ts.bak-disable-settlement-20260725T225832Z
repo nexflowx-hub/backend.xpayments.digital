@@ -9,8 +9,6 @@ import paymentRoutes from '../modules/payments/routes/payments.routes';
 import aiRoutes from '../modules/ai/routes/ai.routes';
 
 import analyticsRoutes from '../modules/analytics/routes/analytics.routes';
-import financeRoutes from '../modules/finance/routes/finance.routes';
-import payoutStatementRoutes from '../modules/payout-statements/routes/payout-statements.routes';
 import walletRoutes from '../modules/wallet/routes/wallet.routes';
 import transactionRoutes from '../modules/transactions/routes/transactions.routes';
 import treasuryRoutes from '../modules/treasury/routes/treasury.routes';
@@ -73,36 +71,22 @@ app.use((req, res, next) => {
 |--------------------------------------------------------------------------
 */
 
-const settlementCronEnabled =
-  String(
-    process.env.XPAYMENTS_SETTLEMENT_CRON_ENABLED ??
-    'false'
-  )
-    .trim()
-    .toLowerCase() === 'true';
-
-if (settlementCronEnabled) {
-  cron.schedule('0 0 * * *', () => {
-    console.log(
-      '⏰ [CRON] Iniciando agendamento diário de liquidação...'
-    );
-
-    processSettlements().catch(error =>
-      console.error(
-        '❌ [CRON] Falha na liquidação:',
-        error
-      )
-    );
-  });
-
+cron.schedule('0 0 * * *', () => {
   console.log(
-    '✅ [CRON] Serviço de liquidação automática (D+3) iniciado.'
+    '⏰ [CRON] Iniciando agendamento diário de liquidação...'
   );
-} else {
-  console.log(
-    '⏸️ [CRON] Liquidação automática D+3 desativada. Liberações em modo manual.'
+
+  processSettlements().catch(error =>
+    console.error(
+      '❌ [CRON] Falha na liquidação:',
+      error
+    )
   );
-}
+});
+
+console.log(
+  '✅ [CRON] Serviço de liquidação automática (D+3) iniciado.'
+);
 
 /*
 |--------------------------------------------------------------------------
@@ -150,8 +134,6 @@ api.use('/gateway-vault', gatewayRoutes);
 api.use('/transactions', transactionRoutes);
 api.use('/wallets', walletRoutes);
 api.use('/analytics', analyticsRoutes);
-api.use('/finance', financeRoutes);
-api.use('/payout-statements', payoutStatementRoutes);
 api.use('/risk', riskRoutes);
 api.use('/treasury', treasuryRoutes);
 
