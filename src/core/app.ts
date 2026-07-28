@@ -60,8 +60,12 @@ app.use(express.json({
   limit: '256kb',
 
   verify(req, _res, buffer) {
+    const requestUrl = String(
+      req.url || ''
+    );
+
     if (
-      req.originalUrl.startsWith(
+      requestUrl.startsWith(
         '/api/v1/payments/webhooks/stripe'
       )
     ) {
