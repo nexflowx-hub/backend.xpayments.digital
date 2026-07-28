@@ -22,6 +22,41 @@ router.get(
 
 router.get(
   '/releases',
+  (_req, res, next) => {
+    const originalJson = res.json.bind(res);
+
+    res.json = ((body: any) => {
+      if (
+        body?.success === true &&
+        Array.isArray(body?.data?.items)
+      ) {
+        const items = body.data.items.map(
+          (item: Record<string, unknown>) => {
+            const {
+              gross: _gross,
+              providerFees: _providerFees,
+              platformFees: _platformFees,
+              ...merchantVisibleItem
+            } = item;
+
+            return merchantVisibleItem;
+          }
+        );
+
+        return originalJson({
+          ...body,
+          data: {
+            ...body.data,
+            items
+          }
+        });
+      }
+
+      return originalJson(body);
+    }) as typeof res.json;
+
+    next();
+  },
   getProviderFinanceReleases
 );
 
