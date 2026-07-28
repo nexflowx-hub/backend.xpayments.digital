@@ -5,6 +5,10 @@ import * as stripeWebhook from '../controllers/stripe.webhook';
 import {
   syncStripeBalanceFromWebhookEvent
 } from '../services/stripe-balance-sync.service';
+import {
+  StripeWebhookVerificationError,
+  verifyStripeWebhookRequest
+} from '../services/stripe-webhook-verification.service';
 
 const router = Router();
 
@@ -22,6 +26,12 @@ router.post(
 // A Stripe fará o POST para
 // /api/v1/payments/webhooks/stripe
 //
+// Segurança:
+// - exige corpo bruto e Stripe-Signature;
+// - valida contra os webhookSecret dos Vaults stripe-* ativos;
+// - associa o evento ao Gateway Vault correto antes do handler;
+// - nunca usa req.body não autenticado para efeitos financeiros.
+//
 // Finance V4.1:
 // - payment_intent.succeeded mantém o fluxo financeiro existente;
 // - depois tenta persistir fee/status/available_on informativos;
@@ -31,15 +41,83 @@ router.post(
 router.post(
   '/webhooks/stripe',
   async (req, res) => {
+    let verified;
+
+    try {
+      verified =
+        await verifyStripeWebhookRequest(req);
+    } catch (error) {
+      if (
+        error instanceof
+          StripeWebhookVerificationError
+      ) {
+        console.warn(
+          '[STRIPE WEBHOOK REJECTED]',
+          {
+            code: error.code,
+            statusCode: error.statusCode,
+            hasSignature:
+              Boolean(req.get('stripe-signature')),
+            rejectedAt:
+              new Date().toISOString()
+          }
+        );
+
+        return res
+          .status(error.statusCode)
+          .json({
+            received: false,
+            error: {
+              code: error.code,
+              message: error.message
+            }
+          });
+      }
+
+      console.error(
+        '[STRIPE WEBHOOK VERIFICATION ERROR]',
+        error
+      );
+
+      return res.status(500).json({
+        received: false,
+        error: {
+          code:
+            'STRIPE_WEBHOOK_VERIFICATION_FAILED',
+          message:
+            'Falha ao validar o webhook Stripe.'
+        }
+      });
+    }
+
+    req.body = verified.event;
+
+    (req as any).verifiedStripeGatewayVaultId =
+      verified.gatewayVaultId;
+
+    (req as any).verifiedStripeProvider =
+      verified.provider;
+
     const eventType = String(
-      req.body?.type || ''
+      verified.event.type || ''
+    );
+
+    console.log(
+      '[STRIPE WEBHOOK VERIFIED]',
+      {
+        eventId: verified.event.id,
+        eventType,
+        gatewayVaultId:
+          verified.gatewayVaultId,
+        provider: verified.provider
+      }
     );
 
     if (eventType === 'charge.updated') {
       try {
         const balanceSync =
           await syncStripeBalanceFromWebhookEvent(
-            req.body
+            verified.event
           );
 
         console.log(
@@ -50,6 +128,8 @@ router.post(
         return res.status(200).json({
           received: true,
           eventType,
+          gatewayProvider:
+            verified.provider,
           balanceSync
         });
       } catch (error) {
@@ -66,6 +146,8 @@ router.post(
         return res.status(200).json({
           received: true,
           eventType,
+          gatewayProvider:
+            verified.provider,
           balanceSync: {
             synced: false,
             reason: 'sync_failed'
@@ -86,7 +168,7 @@ router.post(
       try {
         const balanceSync =
           await syncStripeBalanceFromWebhookEvent(
-            req.body
+            verified.event
           );
 
         console.log(
