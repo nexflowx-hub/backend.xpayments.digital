@@ -24,6 +24,19 @@ const CONFIRM =
 const SYNC_ALL =
   process.env.SYNC_ALL === 'YES';
 
+const STORE_CODE_FILTER = String(
+  process.env.STRIPE_RELEASE_SYNC_STORE_CODE || ''
+).trim().toUpperCase();
+
+const parsedLimit = Number(
+  process.env.STRIPE_RELEASE_SYNC_LIMIT || 0
+);
+
+const SYNC_LIMIT =
+  Number.isFinite(parsedLimit) && parsedLimit > 0
+    ? Math.floor(parsedLimit)
+    : 0;
+
 const DELAY_MS = Math.max(
   0,
   Number(
@@ -63,66 +76,79 @@ async function main() {
     stamp()
   );
 
-  const rows = await prisma.$queryRawUnsafe(`
-    SELECT DISTINCT
-      transaction_record.id::text
-        AS transaction_id,
+  const eligibleRows: any[] =
+    await prisma.$queryRawUnsafe(`
+      SELECT DISTINCT
+        transaction_record.id::text
+          AS transaction_id,
 
-      transaction_record.provider_id
-        AS provider_id,
+        transaction_record.provider_id
+          AS provider_id,
 
-      store.store_code,
-      store.name AS store_name,
+        store.store_code,
+        store.name AS store_name,
 
-      movement.provider_synced_at,
-      movement.provider_available_on,
-      movement.provider_balance_status
+        movement.provider_synced_at,
+        movement.provider_available_on,
+        movement.provider_balance_status
 
-    FROM public.transactions
-      AS transaction_record
+      FROM public.transactions
+        AS transaction_record
 
-    INNER JOIN public.wallet_movements
-      AS movement
+      INNER JOIN public.wallet_movements
+        AS movement
 
-      ON (
-        movement.transaction_id =
-          transaction_record.id
+        ON (
+          movement.transaction_id =
+            transaction_record.id
 
-        OR movement.reference =
-          transaction_record.id::text
+          OR movement.reference =
+            transaction_record.id::text
+        )
+
+      LEFT JOIN public.stores
+        AS store
+
+        ON store.id =
+          transaction_record.store_id
+
+      WHERE lower(
+        transaction_record.status
+      ) = 'succeeded'
+
+        AND transaction_record.provider_id
+          LIKE 'pi_%'
+
+        AND transaction_record.gateway_vault_id
+          IS NOT NULL
+
+        AND movement.type = 'payment'
+        AND movement.direction = 'in'
+
+        ${SYNC_ALL
+          ? ''
+          : `AND (
+              movement.provider_synced_at IS NULL
+              OR movement.provider_available_on IS NULL
+              OR movement.provider_balance_transaction_id IS NULL
+            )`}
+
+      ORDER BY
+        store_code,
+        transaction_id
+    `);
+
+  const storeFilteredRows = STORE_CODE_FILTER
+    ? eligibleRows.filter(row =>
+        String(row.store_code || '')
+          .trim()
+          .toUpperCase() === STORE_CODE_FILTER
       )
+    : eligibleRows;
 
-    LEFT JOIN public.stores
-      AS store
-
-      ON store.id =
-        transaction_record.store_id
-
-    WHERE lower(
-      transaction_record.status
-    ) = 'succeeded'
-
-      AND transaction_record.provider_id
-        LIKE 'pi_%'
-
-      AND transaction_record.gateway_vault_id
-        IS NOT NULL
-
-      AND movement.type = 'payment'
-      AND movement.direction = 'in'
-
-      ${SYNC_ALL
-        ? ''
-        : `AND (
-            movement.provider_synced_at IS NULL
-            OR movement.provider_available_on IS NULL
-            OR movement.provider_balance_transaction_id IS NULL
-          )`}
-
-    ORDER BY
-      store_code,
-      transaction_id
-  `);
+  const rows = SYNC_LIMIT > 0
+    ? storeFilteredRows.slice(0, SYNC_LIMIT)
+    : storeFilteredRows;
 
   console.log(
     '============================================================'
@@ -138,7 +164,16 @@ async function main() {
       ? 'WRITE_PROVIDER_SNAPSHOT'
       : 'READ_ONLY',
     syncAll: SYNC_ALL,
-    transactions: rows.length,
+    storeCodeFilter:
+      STORE_CODE_FILTER || null,
+    syncLimit:
+      SYNC_LIMIT || null,
+    eligibleTransactions:
+      eligibleRows.length,
+    storeFilteredTransactions:
+      storeFilteredRows.length,
+    transactions:
+      rows.length,
     delayMs: DELAY_MS,
     outputDir
   });
@@ -150,6 +185,14 @@ async function main() {
     );
     console.log(
       'Para sincronizar, execute com CONFIRM=YES.'
+    );
+    return;
+  }
+
+  if (rows.length === 0) {
+    console.log();
+    console.log(
+      'Nenhuma transação selecionada para sincronização.'
     );
     return;
   }
@@ -224,6 +267,16 @@ async function main() {
     mode:
       'WRITE_PROVIDER_SNAPSHOT',
     syncAll: SYNC_ALL,
+    storeCodeFilter:
+      STORE_CODE_FILTER || null,
+    syncLimit:
+      SYNC_LIMIT || null,
+    eligibleTransactions:
+      eligibleRows.length,
+    storeFilteredTransactions:
+      storeFilteredRows.length,
+    selectedTransactions:
+      rows.length,
     total: results.length,
     synced: results.filter(
       item => item.synced
