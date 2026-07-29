@@ -20,6 +20,60 @@ const supportedEvents = new Set([
   'payment_intent.canceled'
 ]);
 
+const addBusinessDaysCivil = (
+  source: Date,
+  businessDays: number
+): string => {
+  const civil = new Intl.DateTimeFormat(
+    'en-CA',
+    {
+      timeZone: 'Europe/Lisbon',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }
+  ).format(source);
+
+  const [
+    year,
+    month,
+    day
+  ] = civil
+    .split('-')
+    .map(Number);
+
+  const cursor = new Date(
+    Date.UTC(
+      year,
+      month - 1,
+      day
+    )
+  );
+
+  let remaining =
+    businessDays;
+
+  while (remaining > 0) {
+    cursor.setUTCDate(
+      cursor.getUTCDate() + 1
+    );
+
+    const weekday =
+      cursor.getUTCDay();
+
+    if (
+      weekday !== 0 &&
+      weekday !== 6
+    ) {
+      remaining -= 1;
+    }
+  }
+
+  return cursor
+    .toISOString()
+    .slice(0, 10);
+};
+
 const sanitizePaymentIntent = (
   paymentIntent: any
 ) => ({
@@ -283,37 +337,111 @@ export const handleStripeWebhook =
                   }
                 });
 
-              await tx.walletMovement.create({
-                data: {
-                  walletId:
-                    wallet.id,
-                  merchantId:
-                    transaction
-                      .merchantId,
-                  currency:
-                    currencyUpper,
-                  type: 'payment',
-                  direction: 'in',
-                  amount:
-                    netAmount,
-                  status: 'pendente',
-                  reference:
-                    transaction.id,
-                  metadata: {
-                    provider:
-                      'stripe',
-                    providerId:
-                      paymentIntent.id,
-                    eventId:
-                      event.id ?? null,
-                    grossAmount:
-                      amountNum,
-                    fee:
-                      totalFee,
-                    netAmount
+              const movement =
+                await tx.walletMovement.create({
+                  data: {
+                    walletId:
+                      wallet.id,
+
+                    merchantId:
+                      transaction
+                        .merchantId,
+
+                    currency:
+                      currencyUpper,
+
+                    type:
+                      'payment',
+
+                    direction:
+                      'in',
+
+                    amount:
+                      netAmount,
+
+                    status:
+                      'pendente',
+
+                    reference:
+                      transaction.id,
+
+                    metadata: {
+                      provider:
+                        'stripe',
+
+                      providerId:
+                        paymentIntent.id,
+
+                      eventId:
+                        event.id ?? null,
+
+                      grossAmount:
+                        amountNum,
+
+                      fee:
+                        totalFee,
+
+                      netAmount
+                    }
                   }
-                }
-              });
+                });
+
+              const systemEstimatedReleaseOn =
+                addBusinessDaysCivil(
+                  transaction.createdAt,
+                  3
+                );
+
+              await tx.$executeRawUnsafe(
+                `
+                  UPDATE
+                    public.wallet_movements
+
+                  SET
+                    transaction_id =
+                      $2::uuid,
+
+                    store_id =
+                      $3::uuid,
+
+                    system_estimated_release_on =
+                      $4::date,
+
+                    expected_release_at =
+                      (
+                        $4::date::timestamp
+                        AT TIME ZONE
+                          'Europe/Lisbon'
+                      ),
+
+                    release_date_source =
+                      CASE
+                        WHEN provider_available_on
+                          IS NOT NULL
+                          THEN 'provider'
+
+                        ELSE 'system'
+                      END,
+
+                    platform_fee =
+                      $5::numeric,
+
+                    merchant_net =
+                      $6::numeric,
+
+                    updated_at =
+                      NOW()
+
+                  WHERE id =
+                    $1::uuid
+                `,
+                movement.id,
+                transaction.id,
+                transaction.storeId,
+                systemEstimatedReleaseOn,
+                totalFee,
+                netAmount
+              );
 
               return true;
             }
