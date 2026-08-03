@@ -3,6 +3,8 @@ import {
   randomUUID
 } from 'crypto';
 
+import bcrypt from 'bcryptjs';
+
 import {
   Prisma
 } from '@prisma/client';
@@ -3144,6 +3146,1155 @@ export const requestPayoutManager =
           },
 
           financialImpact:
+            false
+        }
+      });
+    } catch (error) {
+      return respondError(
+        res,
+        error
+      );
+    }
+  };
+
+const confirmationAllowedStatuses =
+  new Set([
+    'draft',
+    'requested',
+    'under_review'
+  ]);
+
+const approvalWindowMinutes =
+  15;
+
+const approvalFailureLimit =
+  5;
+
+const challengeLifetimeMinutes =
+  5;
+
+const hashApprovalIp = (
+  req: AuthRequest
+): string => {
+  const salt =
+    String(
+      process.env
+        .PAYOUT_APPROVAL_RATE_LIMIT_SALT ||
+      process.env.JWT_SECRET ||
+      'xpayments-approval-rate-limit'
+    );
+
+  return createHash('sha256')
+    .update(
+      `${salt}|${req.ip || 'unknown'}`
+    )
+    .digest('hex');
+};
+
+const loadCurrentDraftForConfirmation =
+  async (
+    client: QueryClient,
+    merchantId: string,
+    requestId: string
+  ) => {
+    const row =
+      await fetchRequestById(
+        client,
+        merchantId,
+        requestId
+      );
+
+    if (!row) {
+      throw new ApiError(
+        404,
+        'PAYOUT_REQUEST_NOT_FOUND',
+        'Pedido não encontrado.'
+      );
+    }
+
+    const serialized =
+      serializeRequest(row);
+
+    if (
+      !confirmationAllowedStatuses
+        .has(serialized.status)
+    ) {
+      throw new ApiError(
+        409,
+        'PAYOUT_REQUEST_NOT_CONFIRMABLE',
+        'O pedido não está disponível para confirmação.'
+      );
+    }
+
+    const payload: DraftPayload = {
+      storeId:
+        serialized.store.id,
+
+      currency:
+        serialized.currency,
+
+      externalReference:
+        serialized
+          .externalReference,
+
+      notes:
+        serialized.notes,
+
+      allocations:
+        serialized.allocations
+          .map(
+            (
+              allocation:
+                Record<
+                  string,
+                  any
+                >,
+              position:
+                number
+            ) => ({
+              releaseDate:
+                String(
+                  allocation
+                    .releaseDate
+                ).slice(0, 10),
+
+              provider:
+                String(
+                  allocation.provider
+                ),
+
+              amount:
+                money(
+                  allocation.amount
+                ),
+
+              position
+            })
+          )
+    };
+
+    const validation =
+      await validateDraft(
+        client,
+        merchantId,
+        payload
+      );
+
+    if (
+      cents(
+        validation.requestedAmount
+      ) !==
+      cents(
+        serialized
+          .requestedAmount
+      )
+    ) {
+      throw new ApiError(
+        409,
+        'PAYOUT_REQUEST_OUTDATED',
+        'O valor do pedido já não coincide com as liberações.'
+      );
+    }
+
+    const challengeSnapshotHash =
+      createHash('sha256')
+        .update(
+          JSON.stringify({
+            requestId:
+              serialized.id,
+
+            version:
+              serialized.version,
+
+            status:
+              serialized.status,
+
+            storeId:
+              serialized.store.id,
+
+            walletId:
+              serialized.walletId,
+
+            currency:
+              serialized.currency,
+
+            requestedAmount:
+              serialized
+                .requestedAmount,
+
+            draftSnapshotHash:
+              serialized
+                .snapshotHash,
+
+            liveSnapshotHash:
+              validation
+                .snapshotHash,
+
+            allocations:
+              validation.snapshots
+                .map(
+                  allocation => ({
+                    releaseDate:
+                      allocation
+                        .releaseDate,
+
+                    provider:
+                      allocation
+                        .provider,
+
+                    amount:
+                      allocation.amount,
+
+                    snapshotAvailableAmount:
+                      allocation
+                        .snapshotAvailableAmount,
+
+                    snapshotMovementCount:
+                      allocation
+                        .snapshotMovementCount,
+
+                    providerStatus:
+                      allocation
+                        .providerStatus
+                  })
+                )
+          })
+        )
+        .digest('hex');
+
+    return {
+      serialized,
+      validation,
+      challengeSnapshotHash
+    };
+  };
+
+const insertApprovalAttempt =
+  async (
+    client: QueryClient,
+    input: {
+      requestId:
+        string | null;
+
+      challengeId:
+        string | null;
+
+      merchantId:
+        string;
+
+      actorMerchantId:
+        string;
+
+      ipHash:
+        string;
+
+      succeeded:
+        boolean;
+
+      reason:
+        string;
+
+      metadata?:
+        Record<
+          string,
+          unknown
+        >;
+    }
+  ) => {
+    await client
+      .$queryRawUnsafe(
+        `
+          INSERT INTO public
+            .payout_manager_approval_attempts (
+              payout_request_id,
+              challenge_id,
+              merchant_id,
+              actor_merchant_id,
+              ip_hash,
+              succeeded,
+              reason,
+              metadata
+            )
+
+          VALUES (
+            $1::uuid,
+            $2::uuid,
+            $3::uuid,
+            $4::uuid,
+            $5,
+            $6::boolean,
+            $7,
+            $8::jsonb
+          )
+
+          RETURNING id::text
+        `,
+        input.requestId,
+        input.challengeId,
+        input.merchantId,
+        input.actorMerchantId,
+        input.ipHash,
+        input.succeeded,
+        input.reason,
+        JSON.stringify(
+          input.metadata ||
+          {}
+        )
+      );
+  };
+
+const ensureApprovalRateLimit =
+  async (
+    merchantId: string,
+    actorMerchantId: string,
+    ipHash: string
+  ) => {
+    const rows =
+      await prisma
+        .$queryRawUnsafe<
+          DatabaseRow[]
+        >(
+          `
+            SELECT
+              COUNT(*)::int
+                AS failure_count,
+
+              MAX(created_at)
+                AS last_failure_at
+
+            FROM public
+              .payout_manager_approval_attempts
+
+            WHERE merchant_id =
+                $1::uuid
+
+              AND succeeded =
+                false
+
+              AND created_at >=
+                now() -
+                ($4::integer * interval '1 minute')
+
+              AND (
+                actor_merchant_id =
+                  $2::uuid
+
+                OR ip_hash =
+                  $3
+              )
+          `,
+          merchantId,
+          actorMerchantId,
+          ipHash,
+          approvalWindowMinutes
+        );
+
+    const failureCount =
+      Number(
+        rows[0]
+          ?.failure_count ||
+        0
+      );
+
+    if (
+      failureCount >=
+      approvalFailureLimit
+    ) {
+      throw new ApiError(
+        429,
+        'PAYOUT_APPROVAL_RATE_LIMITED',
+        'Muitas tentativas. Tente novamente mais tarde.'
+      );
+    }
+
+    return {
+      failureCount,
+
+      remainingAttempts:
+        Math.max(
+          approvalFailureLimit -
+            failureCount,
+          0
+        )
+    };
+  };
+
+export const previewPayoutConfirmation =
+  async (
+    req: AuthRequest,
+    res: Response
+  ) => {
+    try {
+      const merchantId =
+        requiredMerchantId(req);
+
+      const requestId =
+        String(
+          req.params.id ||
+          ''
+        ).trim();
+
+      if (
+        !uuidPattern.test(
+          requestId
+        )
+      ) {
+        throw new ApiError(
+          400,
+          'INVALID_REQUEST_ID',
+          'Pedido inválido.'
+        );
+      }
+
+      const expectedVersion =
+        Number(
+          (
+            req.body as
+              Record<
+                string,
+                unknown
+              >
+          )?.expectedVersion
+        );
+
+      if (
+        !Number.isInteger(
+          expectedVersion
+        ) ||
+        expectedVersion < 1
+      ) {
+        throw new ApiError(
+          400,
+          'EXPECTED_VERSION_REQUIRED',
+          'Informe a versão atual do pedido.'
+        );
+      }
+
+      const current =
+        await loadCurrentDraftForConfirmation(
+          prisma,
+          merchantId,
+          requestId
+        );
+
+      if (
+        current.serialized
+          .version !==
+        expectedVersion
+      ) {
+        throw new ApiError(
+          409,
+          'PAYOUT_REQUEST_VERSION_CONFLICT',
+          'O pedido foi alterado. Atualize a página.'
+        );
+      }
+
+      const expiresAt =
+        new Date(
+          Date.now() +
+          challengeLifetimeMinutes *
+            60 *
+            1000
+        );
+
+      const rows =
+        await prisma
+          .$transaction(
+            async tx => {
+              await tx
+                .$executeRawUnsafe(
+                  `
+                    UPDATE public
+                      .payout_confirmation_challenges
+
+                    SET
+                      status =
+                        'invalidated',
+
+                      invalidated_at =
+                        now(),
+
+                      updated_at =
+                        now()
+
+                    WHERE payout_request_id =
+                        $1::uuid
+
+                      AND merchant_id =
+                        $2::uuid
+
+                      AND actor_merchant_id =
+                        $2::uuid
+
+                      AND status =
+                        'pending'
+                  `,
+                  requestId,
+                  merchantId
+                );
+
+              return tx
+                .$queryRawUnsafe<
+                  DatabaseRow[]
+                >(
+                  `
+                    INSERT INTO public
+                      .payout_confirmation_challenges (
+                        payout_request_id,
+                        merchant_id,
+                        actor_merchant_id,
+                        request_version,
+                        snapshot_hash,
+                        status,
+                        expires_at,
+                        metadata
+                      )
+
+                    VALUES (
+                      $1::uuid,
+                      $2::uuid,
+                      $2::uuid,
+                      $3::integer,
+                      $4,
+                      'pending',
+                      $5::timestamptz,
+                      $6::jsonb
+                    )
+
+                    RETURNING
+                      id::text,
+                      status,
+                      expires_at
+                  `,
+                  requestId,
+                  merchantId,
+                  expectedVersion,
+                  current
+                    .challengeSnapshotHash,
+                  expiresAt
+                    .toISOString(),
+                  JSON.stringify({
+                    purpose:
+                      'payout_confirmation',
+
+                    requestedAmount:
+                      current.serialized
+                        .requestedAmount,
+
+                    currency:
+                      current.serialized
+                        .currency,
+
+                    storeId:
+                      current.serialized
+                        .store.id,
+
+                    walletId:
+                      current.serialized
+                        .walletId,
+
+                    allocationCount:
+                      current.validation
+                        .snapshots
+                        .length,
+
+                    bankTransferAttestationRequired:
+                      true,
+
+                    financialImpact:
+                      false
+                  })
+                );
+            },
+            {
+              isolationLevel:
+                Prisma
+                  .TransactionIsolationLevel
+                  .Serializable
+            }
+          );
+
+      const challenge =
+        rows[0];
+
+      return res.json({
+        success:
+          true,
+
+        data: {
+          challengeId:
+            challenge.id,
+
+          status:
+            challenge.status,
+
+          expiresAt:
+            challenge.expires_at,
+
+          request: {
+            id:
+              current.serialized.id,
+
+            requestCode:
+              current.serialized
+                .requestCode,
+
+            version:
+              current.serialized
+                .version,
+
+            status:
+              current.serialized
+                .status,
+
+            store:
+              current.serialized
+                .store,
+
+            walletId:
+              current.serialized
+                .walletId,
+
+            currency:
+              current.serialized
+                .currency,
+
+            requestedAmount:
+              current.serialized
+                .requestedAmount,
+
+            externalReference:
+              current.serialized
+                .externalReference
+          },
+
+          allocations:
+            current.validation
+              .snapshots,
+
+          bankTransferAttestationRequired:
+            true,
+
+          approvalPasswordRequired:
+            true,
+
+          financialImpact:
+            false
+        }
+      });
+    } catch (error) {
+      return respondError(
+        res,
+        error
+      );
+    }
+  };
+
+export const verifyPayoutManager =
+  async (
+    req: AuthRequest,
+    res: Response
+  ) => {
+    try {
+      const merchantId =
+        requiredMerchantId(req);
+
+      const requestId =
+        String(
+          req.params.id ||
+          ''
+        ).trim();
+
+      if (
+        !uuidPattern.test(
+          requestId
+        )
+      ) {
+        throw new ApiError(
+          400,
+          'INVALID_REQUEST_ID',
+          'Pedido inválido.'
+        );
+      }
+
+      const body =
+        (
+          req.body ||
+          {}
+        ) as Record<
+          string,
+          unknown
+        >;
+
+      const challengeId =
+        typeof body
+          .challengeId ===
+          'string'
+          ? body
+              .challengeId
+              .trim()
+          : '';
+
+      const approvalPassword =
+        typeof body
+          .approvalPassword ===
+          'string'
+          ? body
+              .approvalPassword
+          : '';
+
+      const bankTransferConfirmed =
+        body
+          .bankTransferConfirmed ===
+        true;
+
+      if (
+        !uuidPattern.test(
+          challengeId
+        )
+      ) {
+        throw new ApiError(
+          400,
+          'INVALID_CHALLENGE_ID',
+          'Desafio inválido.'
+        );
+      }
+
+      if (
+        !bankTransferConfirmed
+      ) {
+        throw new ApiError(
+          400,
+          'BANK_TRANSFER_ATTESTATION_REQUIRED',
+          'Confirme que a transferência bancária foi executada.'
+        );
+      }
+
+      if (
+        !approvalPassword ||
+        approvalPassword
+          .length > 256
+      ) {
+        throw new ApiError(
+          401,
+          'PAYOUT_APPROVAL_DENIED',
+          'Autorização inválida.'
+        );
+      }
+
+      const passwordHash =
+        String(
+          process.env
+            .PAYOUT_MANAGER_PASSWORD_HASH ||
+          ''
+        ).trim();
+
+      if (
+        !passwordHash
+      ) {
+        throw new ApiError(
+          503,
+          'PAYOUT_APPROVAL_NOT_CONFIGURED',
+          'Autorização administrativa indisponível.'
+        );
+      }
+
+      const ipHash =
+        hashApprovalIp(req);
+
+      const rateLimit =
+        await ensureApprovalRateLimit(
+          merchantId,
+          merchantId,
+          ipHash
+        );
+
+      const passwordValid =
+        await bcrypt.compare(
+          approvalPassword,
+          passwordHash
+        );
+
+      if (
+        !passwordValid
+      ) {
+        await insertApprovalAttempt(
+          prisma,
+          {
+            requestId,
+            challengeId,
+            merchantId,
+
+            actorMerchantId:
+              merchantId,
+
+            ipHash,
+
+            succeeded:
+              false,
+
+            reason:
+              'invalid_password',
+
+            metadata: {
+              remainingAttemptsBefore:
+                rateLimit
+                  .remainingAttempts,
+
+              userAgent:
+                req.get(
+                  'user-agent'
+                ) ||
+                null
+            }
+          }
+        );
+
+        throw new ApiError(
+          401,
+          'PAYOUT_APPROVAL_DENIED',
+          'Autorização inválida.'
+        );
+      }
+
+      const authorization =
+        await prisma
+          .$transaction(
+            async tx => {
+              await tx
+                .$queryRawUnsafe<
+                  DatabaseRow[]
+                >(
+                  `
+                    WITH advisory_lock AS
+                      MATERIALIZED (
+                        SELECT
+                          pg_advisory_xact_lock(
+                            hashtext($1)
+                          )
+                      )
+
+                    SELECT
+                      1::int
+                        AS lock_acquired
+
+                    FROM advisory_lock
+                  `,
+                  `${merchantId}|${ipHash}`
+                );
+
+              const rows =
+                await tx
+                  .$queryRawUnsafe<
+                    DatabaseRow[]
+                  >(
+                    `
+                      SELECT
+                        challenge.id::text,
+                        challenge.status,
+                        challenge.expires_at,
+                        challenge.request_version,
+                        challenge.snapshot_hash,
+
+                        request.status
+                          AS request_status,
+
+                        request.version
+                          AS current_version
+
+                      FROM public
+                        .payout_confirmation_challenges
+                          AS challenge
+
+                      JOIN public
+                        .payout_requests
+                          AS request
+
+                        ON request.id =
+                          challenge
+                            .payout_request_id
+
+                      WHERE challenge.id =
+                          $1::uuid
+
+                        AND challenge
+                          .payout_request_id =
+                          $2::uuid
+
+                        AND challenge
+                          .merchant_id =
+                          $3::uuid
+
+                        AND challenge
+                          .actor_merchant_id =
+                          $3::uuid
+
+                        AND request
+                          .deleted_at
+                          IS NULL
+
+                      FOR UPDATE OF
+                        challenge,
+                        request
+                    `,
+                    challengeId,
+                    requestId,
+                    merchantId
+                  );
+
+              if (
+                rows.length !==
+                1
+              ) {
+                throw new ApiError(
+                  404,
+                  'PAYOUT_CHALLENGE_NOT_FOUND',
+                  'Desafio não encontrado.'
+                );
+              }
+
+              const challenge =
+                rows[0];
+
+              if (
+                challenge.status !==
+                  'pending'
+              ) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_CHALLENGE_NOT_PENDING',
+                  'O desafio já não está disponível.'
+                );
+              }
+
+              if (
+                new Date(
+                  challenge.expires_at
+                ).getTime() <=
+                Date.now()
+              ) {
+                await tx
+                  .$executeRawUnsafe(
+                    `
+                      UPDATE public
+                        .payout_confirmation_challenges
+
+                      SET
+                        status =
+                          'expired',
+
+                        updated_at =
+                          now()
+
+                      WHERE id =
+                        $1::uuid
+                    `,
+                    challengeId
+                  );
+
+                throw new ApiError(
+                  410,
+                  'PAYOUT_CHALLENGE_EXPIRED',
+                  'O desafio expirou.'
+                );
+              }
+
+              if (
+                Number(
+                  challenge
+                    .request_version
+                ) !==
+                Number(
+                  challenge
+                    .current_version
+                )
+              ) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_REQUEST_OUTDATED',
+                  'O pedido foi alterado após o preview.'
+                );
+              }
+
+              const current =
+                await loadCurrentDraftForConfirmation(
+                  tx,
+                  merchantId,
+                  requestId
+                );
+
+              if (
+                current
+                  .challengeSnapshotHash !==
+                challenge
+                  .snapshot_hash
+              ) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_REQUEST_OUTDATED',
+                  'As liberações mudaram após o preview.'
+                );
+              }
+
+              await tx
+                .$executeRawUnsafe(
+                  `
+                    UPDATE public
+                      .payout_confirmation_challenges
+
+                    SET
+                      status =
+                        'authorized',
+
+                      authorized_at =
+                        now(),
+
+                      bank_transfer_confirmed =
+                        true,
+
+                      authorized_by_merchant_id =
+                        $2::uuid,
+
+                      updated_at =
+                        now(),
+
+                      metadata =
+                        metadata ||
+                        $3::jsonb
+
+                    WHERE id =
+                        $1::uuid
+                  `,
+                  challengeId,
+                  merchantId,
+                  JSON.stringify({
+                    authorized:
+                      true,
+
+                    authorizationOnly:
+                      true,
+
+                    financialImpact:
+                      false,
+
+                    payoutEngineCalled:
+                      false
+                  })
+                );
+
+              await insertApprovalAttempt(
+                tx,
+                {
+                  requestId,
+                  challengeId,
+                  merchantId,
+
+                  actorMerchantId:
+                    merchantId,
+
+                  ipHash,
+
+                  succeeded:
+                    true,
+
+                  reason:
+                    'authorized',
+
+                  metadata: {
+                    bankTransferConfirmed:
+                      true,
+
+                    financialImpact:
+                      false
+                  }
+                }
+              );
+
+              await insertEvent(
+                tx,
+                {
+                  requestId,
+                  merchantId,
+
+                  actorMerchantId:
+                    merchantId,
+
+                  eventType:
+                    'MANAGER_AUTHORIZED',
+
+                  fromStatus:
+                    current.serialized
+                      .status,
+
+                  toStatus:
+                    current.serialized
+                      .status,
+
+                  req,
+
+                  payload: {
+                    challengeId,
+
+                    bankTransferConfirmed:
+                      true,
+
+                    authorizationOnly:
+                      true,
+
+                    financialImpact:
+                      false,
+
+                    payoutEngineCalled:
+                      false
+                  }
+                }
+              );
+
+              return {
+                challengeId,
+
+                status:
+                  'authorized',
+
+                expiresAt:
+                  challenge
+                    .expires_at,
+
+                requestVersion:
+                  Number(
+                    challenge
+                      .request_version
+                  )
+              };
+            },
+            {
+              maxWait:
+                10000,
+
+              timeout:
+                30000,
+
+              isolationLevel:
+                Prisma
+                  .TransactionIsolationLevel
+                  .Serializable
+            }
+          );
+
+      return res.json({
+        success:
+          true,
+
+        data: {
+          authorization,
+
+          confirmationReady:
+            true,
+
+          financialImpact:
+            false,
+
+          payoutEngineCalled:
             false
         }
       });

@@ -7,8 +7,10 @@ import {
   deletePayoutRequest,
   getPayoutFundingOptions,
   listPayoutRequests,
+  previewPayoutConfirmation,
   requestPayoutManager,
-  updatePayoutRequest
+  updatePayoutRequest,
+  verifyPayoutManager
 } from '../controllers/payout-requests.controller';
 
 import {
@@ -40,6 +42,16 @@ router.post(
 router.post(
   '/:id/request-manager',
   requestPayoutManager
+);
+
+router.post(
+  '/:id/preview-confirmation',
+  previewPayoutConfirmation
+);
+
+router.post(
+  '/:id/verify-manager',
+  verifyPayoutManager
 );
 
 router.patch(
