@@ -295,6 +295,151 @@ export const processDirectCharge =
           payment_method_types?.[0]
         );
 
+      /*
+       * Métodos S2S com autenticação por redirect.
+       *
+       * Este adapter é estritamente aditivo e não altera
+       * os fluxos existentes de MB WAY, Bizum ou Multibanco.
+       */
+      const redirectS2SMethods =
+        new Set([
+          'revolut_pay',
+          'amazon_pay',
+          'satispay',
+          'bancontact'
+        ]);
+
+      const isRedirectS2SMethod =
+        redirectS2SMethods.has(
+          rawMethod
+        );
+
+      let redirectReturnUrl:
+        string | null = null;
+
+      if (isRedirectS2SMethod) {
+        const candidateReturnUrl =
+          String(
+            metadata.return_url ??
+              req.body.return_url ??
+              ''
+          ).trim();
+
+        try {
+          const parsedReturnUrl =
+            new URL(
+              candidateReturnUrl
+            );
+
+          if (
+            parsedReturnUrl.protocol !==
+              'https:'
+          ) {
+            throw new Error(
+              'HTTPS_REQUIRED'
+            );
+          }
+
+          redirectReturnUrl =
+            parsedReturnUrl.toString();
+        } catch {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code:
+                'RETURN_URL_REQUIRED',
+              message:
+                'Informe metadata.return_url com uma URL HTTPS válida.'
+            }
+          });
+        }
+
+        if (
+          [
+            'satispay',
+            'bancontact'
+          ].includes(rawMethod) &&
+          currencyUpper !== 'EUR'
+        ) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code:
+                'PAYMENT_METHOD_EUR_REQUIRED',
+              message:
+                `${rawMethod} aceita apenas pagamentos em EUR.`
+            }
+          });
+        }
+
+        if (
+          rawMethod === 'bancontact' &&
+          !String(
+            customer.name ?? ''
+          ).trim()
+        ) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code:
+                'BANCONTACT_NAME_REQUIRED',
+              message:
+                'O nome completo do cliente é obrigatório para Bancontact.'
+            }
+          });
+        }
+      }
+
+      /*
+       * BLIK S2S.
+       *
+       * O código é efémero e só pode ser utilizado durante
+       * a confirmação. Nunca deve ser persistido ou registado.
+       */
+      const blikCode =
+        rawMethod === 'blik'
+          ? String(
+              req.body
+                ?.payment_method_options
+                ?.blik
+                ?.code ??
+              req.body?.blik_code ??
+              ''
+            ).trim()
+          : null;
+
+      if (
+        rawMethod === 'blik' &&
+        currencyUpper !== 'PLN'
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code:
+              'BLIK_PLN_REQUIRED',
+            message:
+              'BLIK aceita apenas pagamentos em PLN.'
+          }
+        });
+      }
+
+      if (
+        rawMethod === 'blik' &&
+        !/^\d{6}$/.test(
+          String(blikCode ?? '')
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code:
+              'INVALID_BLIK_CODE',
+            message:
+              'Informe um código BLIK válido de seis dígitos.'
+          }
+        });
+      }
+
       if (
         rawMethod === 'bizum' &&
         currencyUpper !== 'EUR'
@@ -372,6 +517,39 @@ export const processDirectCharge =
           req.body.reference ??
           `REQ-${Date.now()}`
         ).trim();
+
+      const safeRawRequest =
+        JSON.parse(
+          JSON.stringify(
+            req.body
+          )
+        );
+
+      if (rawMethod === 'blik') {
+        if (
+          safeRawRequest
+            ?.payment_method_options
+            ?.blik
+        ) {
+          safeRawRequest
+            .payment_method_options
+            .blik
+            .code =
+              '[REDACTED]';
+        }
+
+        if (
+          Object.prototype
+            .hasOwnProperty
+            .call(
+              safeRawRequest,
+              'blik_code'
+            )
+        ) {
+          safeRawRequest.blik_code =
+            '[REDACTED]';
+        }
+      }
 
       transaction =
         await prisma.transaction.findFirst({
@@ -571,11 +749,7 @@ export const processDirectCharge =
               customerEmail:
                 customer.email || null,
               rawRequest:
-                JSON.parse(
-                  JSON.stringify(
-                    req.body
-                  )
-                )
+                safeRawRequest
             }
           });
       } else {
@@ -598,11 +772,7 @@ export const processDirectCharge =
               gateway:
                 gatewayVault.provider,
               rawRequest:
-                JSON.parse(
-                  JSON.stringify(
-                    req.body
-                  )
-                ),
+                safeRawRequest,
               customerEmail:
                 customer.email || null
             }
@@ -677,6 +847,37 @@ export const processDirectCharge =
             metadata.return_url ??
               'https://xpayments.digital/callback'
           );
+      }
+
+      if (isRedirectS2SMethod) {
+        stripePayload.payment_method_data =
+          {
+            type: rawMethod,
+            billing_details: billing
+          };
+
+        stripePayload.confirm = true;
+
+        stripePayload.return_url =
+          redirectReturnUrl;
+      }
+
+      if (rawMethod === 'blik') {
+        stripePayload.payment_method_data =
+          {
+            type: 'blik',
+            billing_details: billing
+          };
+
+        stripePayload.payment_method_options =
+          {
+            blik: {
+              code:
+                String(blikCode)
+            }
+          };
+
+        stripePayload.confirm = true;
       }
 
       const idempotencyKey =
@@ -786,6 +987,15 @@ export const processDirectCharge =
             orchestratorAction.url =
               redirectUrl;
           }
+        } else if (
+          rawMethod === 'blik'
+        ) {
+          orchestratorAction = {
+            type: 'bank_app',
+            message:
+              'Confirme o pagamento BLIK na aplicação do seu banco.',
+            expiresInSeconds: 60
+          };
         } else if (
           nextAction
             ?.redirect_to_url?.url
