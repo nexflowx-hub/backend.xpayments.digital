@@ -3,6 +3,7 @@ import {
 } from 'express';
 
 import {
+  confirmPayoutRequest,
   createPayoutRequest,
   deletePayoutRequest,
   getPayoutFundingOptions,
@@ -52,6 +53,11 @@ router.post(
 router.post(
   '/:id/verify-manager',
   verifyPayoutManager
+);
+
+router.post(
+  '/:id/confirm',
+  confirmPayoutRequest
 );
 
 router.patch(

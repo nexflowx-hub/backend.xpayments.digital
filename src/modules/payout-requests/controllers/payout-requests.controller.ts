@@ -17,6 +17,11 @@ import prisma from
   '../../../core/prisma';
 
 import {
+  confirmPaidPayoutInTransaction
+} from
+  '../../payout-statements/services/payout-engine.service';
+
+import {
   AuthRequest
 } from
   '../../../middleware/auth.middleware';
@@ -4297,6 +4302,1099 @@ export const verifyPayoutManager =
           payoutEngineCalled:
             false
         }
+      });
+    } catch (error) {
+      return respondError(
+        res,
+        error
+      );
+    }
+  };
+
+type EngineFundingSource = {
+  sourceType:
+    'wallet_movement';
+
+  walletMovementId:
+    string;
+
+  amount:
+    number;
+
+  metadata:
+    Record<
+      string,
+      unknown
+    >;
+};
+
+const allocatePayoutFundingSources =
+  async (
+    tx: Prisma.TransactionClient,
+    input: {
+      merchantId:
+        string;
+
+      storeId:
+        string;
+
+      currency:
+        string;
+
+      requestId:
+        string;
+
+      allocations:
+        Array<{
+          releaseDate:
+            string;
+
+          provider:
+            string;
+
+          amount:
+            number;
+        }>;
+    }
+  ): Promise<
+    EngineFundingSource[]
+  > => {
+    const sources:
+      EngineFundingSource[] =
+      [];
+
+    const orderedAllocations =
+      [...input.allocations]
+        .sort(
+          (
+            left,
+            right
+          ) =>
+            left.releaseDate
+              .localeCompare(
+                right.releaseDate
+              ) ||
+            left.provider
+              .localeCompare(
+                right.provider
+              )
+        );
+
+    for (
+      const allocation of
+      orderedAllocations
+    ) {
+      const rows =
+        await tx
+          .$queryRawUnsafe<
+            DatabaseRow[]
+          >(
+            `
+              WITH funding AS (
+                SELECT
+                  wallet_movement_id,
+
+                  COALESCE(
+                    SUM(
+                      allocated_amount
+                    ),
+                    0
+                  ) AS allocated_amount
+
+                FROM public
+                  .payout_funding_allocations
+
+                WHERE source_type =
+                    'wallet_movement'
+
+                  AND wallet_movement_id
+                    IS NOT NULL
+
+                GROUP BY
+                  wallet_movement_id
+              )
+
+              SELECT
+                movement.id::text,
+
+                movement.created_at,
+
+                GREATEST(
+                  GREATEST(
+                    COALESCE(
+                      movement.merchant_net,
+
+                      movement.amount -
+                        COALESCE(
+                          movement.provider_fee,
+                          0
+                        )
+                    ),
+                    0
+                  ) -
+                  COALESCE(
+                    funding.allocated_amount,
+                    0
+                  ),
+                  0
+                )::text
+                  AS remaining_amount
+
+              FROM public.wallet_movements
+                AS movement
+
+              LEFT JOIN public.transactions
+                AS transaction_record
+
+                ON (
+                  transaction_record.id =
+                    movement.transaction_id
+
+                  OR
+                  transaction_record.id::text =
+                    movement.reference
+                )
+
+              LEFT JOIN public.gateway_vaults
+                AS gateway_vault
+
+                ON gateway_vault.id =
+                  transaction_record
+                    .gateway_vault_id
+
+              LEFT JOIN funding
+
+                ON funding
+                  .wallet_movement_id =
+                  movement.id
+
+              WHERE movement.merchant_id =
+                  $1::uuid
+
+                AND movement.store_id =
+                  $2::uuid
+
+                AND upper(
+                  movement.currency
+                ) = $3
+
+                AND movement.direction =
+                  'in'
+
+                AND movement.type =
+                  'payment'
+
+                AND movement.status IN (
+                  'pendente',
+                  'disponivel'
+                )
+
+                AND COALESCE(
+                  movement
+                    .manual_estimated_release_on,
+
+                  movement
+                    .provider_available_on,
+
+                  movement
+                    .system_estimated_release_on,
+
+                  (
+                    movement
+                      .expected_release_at
+
+                    AT TIME ZONE
+                      'Europe/Lisbon'
+                  )::date
+                ) = $4::date
+
+                AND COALESCE(
+                  transaction_record.gateway,
+                  gateway_vault.provider,
+                  'unknown'
+                ) = $5
+
+                AND GREATEST(
+                  GREATEST(
+                    COALESCE(
+                      movement.merchant_net,
+
+                      movement.amount -
+                        COALESCE(
+                          movement.provider_fee,
+                          0
+                        )
+                    ),
+                    0
+                  ) -
+                  COALESCE(
+                    funding.allocated_amount,
+                    0
+                  ),
+                  0
+                ) > 0
+
+              ORDER BY
+                movement.created_at,
+                movement.id
+
+              FOR UPDATE OF movement
+            `,
+            input.merchantId,
+            input.storeId,
+            input.currency,
+            allocation.releaseDate,
+            allocation.provider
+          );
+
+      let remainingCents =
+        cents(
+          allocation.amount
+        );
+
+      for (
+        const row of rows
+      ) {
+        if (
+          remainingCents <= 0
+        ) {
+          break;
+        }
+
+        const availableCents =
+          cents(
+            row.remaining_amount
+          );
+
+        if (
+          availableCents <= 0
+        ) {
+          continue;
+        }
+
+        const selectedCents =
+          Math.min(
+            remainingCents,
+            availableCents
+          );
+
+        sources.push({
+          sourceType:
+            'wallet_movement',
+
+          walletMovementId:
+            String(row.id),
+
+          amount:
+            money(
+              selectedCents /
+              100
+            ),
+
+          metadata: {
+            payoutRequestId:
+              input.requestId,
+
+            releaseDate:
+              allocation
+                .releaseDate,
+
+            provider:
+              allocation.provider,
+
+            selectedBy:
+              'payout_request_stage1d',
+
+            deterministicOrder:
+              true
+          }
+        });
+
+        remainingCents -=
+          selectedCents;
+      }
+
+      if (
+        remainingCents !== 0
+      ) {
+        throw new ApiError(
+          409,
+          'PAYOUT_REQUEST_OUTDATED',
+          `Funding insuficiente para ${allocation.releaseDate} / ${allocation.provider}.`
+        );
+      }
+    }
+
+    return sources;
+  };
+
+const mapPayoutEngineError = (
+  error: unknown
+): never => {
+  if (
+    error instanceof
+      ApiError
+  ) {
+    throw error;
+  }
+
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(error);
+
+  if (
+    /saldo insuficiente/i
+      .test(message)
+  ) {
+    throw new ApiError(
+      409,
+      'PAYOUT_INSUFFICIENT_BALANCE',
+      'Saldo insuficiente para confirmar o payout.'
+    );
+  }
+
+  if (
+    /aloca[cç][aã]o excede|funding .*n[aã]o coincide|movimento incompat[ií]vel|movimento n[aã]o encontrado/i
+      .test(message)
+  ) {
+    throw new ApiError(
+      409,
+      'PAYOUT_REQUEST_OUTDATED',
+      'As liberações mudaram. Gere um novo preview.'
+    );
+  }
+
+  if (
+    /payout duplicado/i
+      .test(message)
+  ) {
+    throw new ApiError(
+      409,
+      'PAYOUT_ALREADY_CONFIRMED',
+      'O payout já foi confirmado.'
+    );
+  }
+
+  throw error;
+};
+
+export const confirmPayoutRequest =
+  async (
+    req: AuthRequest,
+    res: Response
+  ) => {
+    try {
+      const merchantId =
+        requiredMerchantId(req);
+
+      const requestId =
+        String(
+          req.params.id ||
+          ''
+        ).trim();
+
+      if (
+        !uuidPattern.test(
+          requestId
+        )
+      ) {
+        throw new ApiError(
+          400,
+          'INVALID_REQUEST_ID',
+          'Pedido inválido.'
+        );
+      }
+
+      const body =
+        (
+          req.body ||
+          {}
+        ) as Record<
+          string,
+          unknown
+        >;
+
+      const challengeId =
+        typeof body
+          .challengeId ===
+          'string'
+          ? body
+              .challengeId
+              .trim()
+          : '';
+
+      const bankTransferConfirmed =
+        body
+          .bankTransferConfirmed ===
+        true;
+
+      if (
+        !uuidPattern.test(
+          challengeId
+        )
+      ) {
+        throw new ApiError(
+          400,
+          'INVALID_CHALLENGE_ID',
+          'Desafio inválido.'
+        );
+      }
+
+      if (
+        !bankTransferConfirmed
+      ) {
+        throw new ApiError(
+          400,
+          'BANK_TRANSFER_ATTESTATION_REQUIRED',
+          'Confirme que a transferência bancária foi executada.'
+        );
+      }
+
+      const confirmation =
+        await prisma
+          .$transaction(
+            async tx => {
+              await tx
+                .$queryRawUnsafe<
+                  DatabaseRow[]
+                >(
+                  `
+                    WITH advisory_lock AS
+                      MATERIALIZED (
+                        SELECT
+                          pg_advisory_xact_lock(
+                            hashtext($1)
+                          )
+                      )
+
+                    SELECT
+                      1::int
+                        AS lock_acquired
+
+                    FROM advisory_lock
+                  `,
+                  `payout-request-confirm|${requestId}`
+                );
+
+              const lockedRows =
+                await tx
+                  .$queryRawUnsafe<
+                    DatabaseRow[]
+                  >(
+                    `
+                      SELECT
+                        challenge.id::text
+                          AS challenge_id,
+
+                        challenge.status
+                          AS challenge_status,
+
+                        challenge.expires_at,
+
+                        challenge.request_version,
+
+                        challenge.snapshot_hash,
+
+                        challenge
+                          .bank_transfer_confirmed,
+
+                        request.request_code,
+
+                        request.status
+                          AS request_status,
+
+                        request.version
+                          AS current_version,
+
+                        request
+                          .confirmed_payout_statement_id::text
+
+                      FROM public
+                        .payout_confirmation_challenges
+                          AS challenge
+
+                      JOIN public
+                        .payout_requests
+                          AS request
+
+                        ON request.id =
+                          challenge
+                            .payout_request_id
+
+                      WHERE challenge.id =
+                          $1::uuid
+
+                        AND challenge
+                          .payout_request_id =
+                          $2::uuid
+
+                        AND challenge
+                          .merchant_id =
+                          $3::uuid
+
+                        AND challenge
+                          .actor_merchant_id =
+                          $3::uuid
+
+                        AND request
+                          .merchant_id =
+                          $3::uuid
+
+                        AND request
+                          .deleted_at
+                          IS NULL
+
+                      FOR UPDATE OF
+                        challenge,
+                        request
+                    `,
+                    challengeId,
+                    requestId,
+                    merchantId
+                  );
+
+              if (
+                lockedRows.length !==
+                1
+              ) {
+                throw new ApiError(
+                  404,
+                  'PAYOUT_CHALLENGE_NOT_FOUND',
+                  'Desafio não encontrado.'
+                );
+              }
+
+              const locked =
+                lockedRows[0];
+
+              if (
+                locked.request_status ===
+                  'confirmed' &&
+                locked
+                  .confirmed_payout_statement_id
+              ) {
+                const existingRows =
+                  await tx
+                    .$queryRawUnsafe<
+                      DatabaseRow[]
+                    >(
+                      `
+                        SELECT
+                          id::text,
+                          statement_code,
+                          amount::text,
+                          currency,
+                          status,
+                          paid_on::text,
+                          external_reference
+
+                        FROM public
+                          .payout_statements
+
+                        WHERE id =
+                          $1::uuid
+
+                          AND merchant_id =
+                            $2::uuid
+
+                        LIMIT 1
+                      `,
+                      locked
+                        .confirmed_payout_statement_id,
+                      merchantId
+                    );
+
+                if (
+                  existingRows.length !==
+                  1
+                ) {
+                  throw new ApiError(
+                    500,
+                    'CONFIRMED_PAYOUT_NOT_FOUND',
+                    'Payout confirmado não encontrado.'
+                  );
+                }
+
+                return {
+                  alreadyConfirmed:
+                    true,
+
+                  payout:
+                    existingRows[0],
+
+                  requestId,
+
+                  challengeId,
+
+                  financialImpact:
+                    false
+                };
+              }
+
+              if (
+                locked
+                  .challenge_status !==
+                'authorized'
+              ) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_CHALLENGE_NOT_AUTHORIZED',
+                  'O desafio não está autorizado.'
+                );
+              }
+
+              if (
+                locked
+                  .bank_transfer_confirmed !==
+                true
+              ) {
+                throw new ApiError(
+                  409,
+                  'BANK_TRANSFER_NOT_AUTHORIZED',
+                  'A transferência bancária não foi autorizada.'
+                );
+              }
+
+              if (
+                new Date(
+                  locked.expires_at
+                ).getTime() <=
+                Date.now()
+              ) {
+                throw new ApiError(
+                  410,
+                  'PAYOUT_CHALLENGE_EXPIRED',
+                  'O desafio expirou.'
+                );
+              }
+
+              if (
+                Number(
+                  locked
+                    .request_version
+                ) !==
+                Number(
+                  locked
+                    .current_version
+                )
+              ) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_REQUEST_OUTDATED',
+                  'O pedido foi alterado após a autorização.'
+                );
+              }
+
+              const current =
+                await loadCurrentDraftForConfirmation(
+                  tx,
+                  merchantId,
+                  requestId
+                );
+
+              if (
+                current
+                  .challengeSnapshotHash !==
+                locked
+                  .snapshot_hash
+              ) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_REQUEST_OUTDATED',
+                  'As liberações mudaram após a autorização.'
+                );
+              }
+
+              const fundingSources =
+                await allocatePayoutFundingSources(
+                  tx,
+                  {
+                    merchantId,
+
+                    storeId:
+                      current.serialized
+                        .store.id,
+
+                    currency:
+                      current.serialized
+                        .currency,
+
+                    requestId,
+
+                    allocations:
+                      current.validation
+                        .snapshots
+                        .map(
+                          allocation => ({
+                            releaseDate:
+                              allocation
+                                .releaseDate,
+
+                            provider:
+                              allocation
+                                .provider,
+
+                            amount:
+                              allocation.amount
+                          })
+                        )
+                  }
+                );
+
+              const statementCode =
+                `PAYOUT-${current.serialized.requestCode}`;
+
+              const idempotencyKey =
+                `payout-request:${requestId}`;
+
+              const paidOn =
+                civilDate();
+
+              const engineResult =
+                await (
+                  async () => {
+                    try {
+                      return await confirmPaidPayoutInTransaction(
+                        tx,
+                        {
+                          merchantId,
+
+                          walletId:
+                            current.serialized
+                              .walletId,
+
+                          storeId:
+                            current.serialized
+                              .store.id,
+
+                          statementCode,
+                          idempotencyKey,
+
+                          externalReference:
+                            current.serialized
+                              .externalReference ||
+                            statementCode,
+
+                          currency:
+                            current.serialized
+                              .currency,
+
+                          amount:
+                            current.serialized
+                              .requestedAmount,
+
+                          scheduledFor:
+                            paidOn,
+
+                          paidOn,
+
+                          description:
+                            current.serialized
+                              .notes ||
+                            `Payout confirmado pelo pedido ${current.serialized.requestCode}.`,
+
+                          createdBy:
+                            `merchant:${merchantId}`,
+
+                          fundingSources,
+
+                          metadata: {
+                            source:
+                              'payout_request',
+
+                            payoutRequestId:
+                              requestId,
+
+                            payoutRequestCode:
+                              current.serialized
+                                .requestCode,
+
+                            challengeId,
+
+                            authorizedByMerchantId:
+                              merchantId,
+
+                            bankTransferConfirmed:
+                              true,
+
+                            requestVersion:
+                              current.serialized
+                                .version,
+
+                            snapshotHash:
+                              current
+                                .challengeSnapshotHash
+                          }
+                        }
+                      );
+                    } catch (error) {
+                      return mapPayoutEngineError(
+                        error
+                      );
+                    }
+                  }
+                )();
+
+              const updatedRequests =
+                await tx
+                  .$queryRawUnsafe<
+                    DatabaseRow[]
+                  >(
+                    `
+                      UPDATE public
+                        .payout_requests
+
+                      SET
+                        status =
+                          'confirmed',
+
+                        confirmed_at =
+                          now(),
+
+                        confirmed_payout_statement_id =
+                          $2::uuid,
+
+                        version =
+                          version + 1,
+
+                        metadata =
+                          metadata ||
+                          $3::jsonb,
+
+                        updated_at =
+                          now()
+
+                      WHERE id =
+                          $1::uuid
+
+                        AND merchant_id =
+                          $4::uuid
+
+                        AND status IN (
+                          'draft',
+                          'requested',
+                          'under_review'
+                        )
+
+                        AND deleted_at
+                          IS NULL
+
+                      RETURNING
+                        id::text,
+                        status,
+                        version,
+                        confirmed_at,
+                        confirmed_payout_statement_id::text
+                    `,
+                    requestId,
+                    engineResult
+                      .payout.id,
+                    JSON.stringify({
+                      confirmedBy:
+                        'payout_request_stage1d',
+
+                      challengeId,
+
+                      statementCode,
+
+                      idempotencyKey,
+
+                      bankTransferConfirmed:
+                        true,
+
+                      engineVersion:
+                        '4.2'
+                    }),
+                    merchantId
+                  );
+
+              if (
+                updatedRequests.length !==
+                1
+              ) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_REQUEST_CONFIRMATION_CONFLICT',
+                  'O pedido não pôde ser marcado como confirmado.'
+                );
+              }
+
+              const consumedChallenges =
+                await tx
+                  .$queryRawUnsafe<
+                    DatabaseRow[]
+                  >(
+                    `
+                      UPDATE public
+                        .payout_confirmation_challenges
+
+                      SET
+                        status =
+                          'consumed',
+
+                        consumed_at =
+                          now(),
+
+                        metadata =
+                          metadata ||
+                          $2::jsonb,
+
+                        updated_at =
+                          now()
+
+                      WHERE id =
+                          $1::uuid
+
+                        AND status =
+                          'authorized'
+
+                      RETURNING
+                        id::text,
+                        status,
+                        consumed_at
+                    `,
+                    challengeId,
+                    JSON.stringify({
+                      consumed:
+                        true,
+
+                      payoutStatementId:
+                        engineResult
+                          .payout.id,
+
+                      payoutRequestId:
+                        requestId,
+
+                      engineVersion:
+                        '4.2',
+
+                      financialImpact:
+                        true
+                    })
+                  );
+
+              if (
+                consumedChallenges.length !==
+                1
+              ) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_CHALLENGE_CONSUMPTION_CONFLICT',
+                  'O desafio não pôde ser consumido.'
+                );
+              }
+
+              await insertEvent(
+                tx,
+                {
+                  requestId,
+                  merchantId,
+
+                  actorMerchantId:
+                    merchantId,
+
+                  eventType:
+                    'PAYOUT_CONFIRMED',
+
+                  fromStatus:
+                    current.serialized
+                      .status,
+
+                  toStatus:
+                    'confirmed',
+
+                  req,
+
+                  payload: {
+                    challengeId,
+
+                    payoutStatementId:
+                      engineResult
+                        .payout.id,
+
+                    statementCode,
+
+                    amount:
+                      current.serialized
+                        .requestedAmount,
+
+                    currency:
+                      current.serialized
+                        .currency,
+
+                    fundingSourceCount:
+                      fundingSources.length,
+
+                    bankTransferConfirmed:
+                      true,
+
+                    engineVersion:
+                      '4.2',
+
+                    financialImpact:
+                      true
+                  }
+                }
+              );
+
+              return {
+                alreadyConfirmed:
+                  false,
+
+                request:
+                  updatedRequests[0],
+
+                challenge:
+                  consumedChallenges[0],
+
+                payout:
+                  engineResult.payout,
+
+                storeAllocationId:
+                  engineResult
+                    .storeAllocationId,
+
+                fundingAllocationIds:
+                  engineResult
+                    .fundingAllocationIds,
+
+                payoutMovement:
+                  engineResult
+                    .payoutMovement,
+
+                walletBefore:
+                  engineResult
+                    .walletBefore,
+
+                walletAfter:
+                  engineResult
+                    .walletAfter,
+
+                financialImpact:
+                  true
+              };
+            },
+            {
+              maxWait:
+                10000,
+
+              timeout:
+                30000,
+
+              isolationLevel:
+                Prisma
+                  .TransactionIsolationLevel
+                  .Serializable
+            }
+          );
+
+      return res.json({
+        success:
+          true,
+
+        data:
+          confirmation
       });
     } catch (error) {
       return respondError(
