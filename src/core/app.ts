@@ -11,6 +11,7 @@ import aiRoutes from '../modules/ai/routes/ai.routes';
 import analyticsRoutes from '../modules/analytics/routes/analytics.routes';
 import financeRoutes from '../modules/finance/routes/finance.routes';
 import payoutStatementRoutes from '../modules/payout-statements/routes/payout-statements.routes';
+import payoutRequestRoutes from '../modules/payout-requests/routes/payout-requests.routes';
 import walletRoutes from '../modules/wallet/routes/wallet.routes';
 import transactionRoutes from '../modules/transactions/routes/transactions.routes';
 import treasuryRoutes from '../modules/treasury/routes/treasury.routes';
@@ -167,6 +168,7 @@ api.use('/wallets', walletRoutes);
 api.use('/analytics', analyticsRoutes);
 api.use('/finance', financeRoutes);
 api.use('/payout-statements', payoutStatementRoutes);
+api.use('/payout-requests', payoutRequestRoutes);
 api.use('/risk', riskRoutes);
 api.use('/treasury', treasuryRoutes);
 
