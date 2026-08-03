@@ -2528,3 +2528,629 @@ export const deletePayoutRequest =
       );
     }
   };
+
+type NotificationTarget = {
+  channel:
+    | 'telegram'
+    | 'discord'
+    | 'email'
+    | 'slack'
+    | 'webhook';
+
+  destination:
+    string;
+};
+
+const getNotificationTargets =
+  (): NotificationTarget[] => {
+    const candidates: Array<
+      [
+        NotificationTarget['channel'],
+        string | undefined
+      ]
+    > = [
+      [
+        'telegram',
+        process.env
+          .PAYOUT_MANAGER_TELEGRAM_DESTINATION
+      ],
+      [
+        'discord',
+        process.env
+          .PAYOUT_MANAGER_DISCORD_DESTINATION
+      ],
+      [
+        'email',
+        process.env
+          .PAYOUT_MANAGER_EMAIL_DESTINATION
+      ],
+      [
+        'slack',
+        process.env
+          .PAYOUT_MANAGER_SLACK_DESTINATION
+      ],
+      [
+        'webhook',
+        process.env
+          .PAYOUT_MANAGER_WEBHOOK_URL
+      ]
+    ];
+
+    return candidates
+      .map(
+        (
+          [
+            channel,
+            rawDestination
+          ]
+        ) => ({
+          channel,
+
+          destination:
+            String(
+              rawDestination ||
+              ''
+            ).trim()
+        })
+      )
+      .filter(
+        target =>
+          target.destination
+            .length > 0
+      );
+  };
+
+const insertManagerNotification =
+  async (
+    tx: Prisma.TransactionClient,
+    input: {
+      requestId:
+        string;
+
+      merchantId:
+        string;
+
+      requestCode:
+        string;
+
+      currency:
+        string;
+
+      requestedAmount:
+        number;
+
+      storeId:
+        string;
+
+      storeCode:
+        string;
+
+      storeName:
+        string;
+
+      externalReference:
+        string | null;
+
+      notes:
+        string | null;
+
+      actorMerchantId:
+        string;
+
+      reviewUrl:
+        string | null;
+
+      targets:
+        NotificationTarget[];
+    }
+  ) => {
+    for (
+      const target of
+      input.targets
+    ) {
+      await tx
+        .$executeRawUnsafe(
+          `
+            INSERT INTO public
+              .payout_request_notification_outbox (
+                payout_request_id,
+                merchant_id,
+                channel,
+                destination,
+                status,
+                attempts,
+                next_attempt_at,
+                payload,
+                created_at,
+                updated_at
+              )
+
+            VALUES (
+              $1::uuid,
+              $2::uuid,
+              $3,
+              $4,
+              'pending',
+              0,
+              now(),
+              $5::jsonb,
+              now(),
+              now()
+            )
+          `,
+          input.requestId,
+          input.merchantId,
+          target.channel,
+          target.destination,
+          JSON.stringify({
+            event:
+              'PAYOUT_MANAGER_REQUESTED',
+
+            requestId:
+              input.requestId,
+
+            requestCode:
+              input.requestCode,
+
+            merchantId:
+              input.merchantId,
+
+            actorMerchantId:
+              input.actorMerchantId,
+
+            store: {
+              id:
+                input.storeId,
+
+              code:
+                input.storeCode,
+
+              name:
+                input.storeName
+            },
+
+            currency:
+              input.currency,
+
+            requestedAmount:
+              input.requestedAmount,
+
+            externalReference:
+              input.externalReference,
+
+            notes:
+              input.notes,
+
+            reviewUrl:
+              input.reviewUrl,
+
+            createdAt:
+              new Date()
+                .toISOString()
+          })
+        );
+    }
+  };
+
+export const requestPayoutManager =
+  async (
+    req: AuthRequest,
+    res: Response
+  ) => {
+    try {
+      const merchantId =
+        requiredMerchantId(req);
+
+      const requestId =
+        String(
+          req.params.id ||
+          ''
+        ).trim();
+
+      if (
+        !uuidPattern.test(
+          requestId
+        )
+      ) {
+        throw new ApiError(
+          400,
+          'INVALID_REQUEST_ID',
+          'Pedido inválido.'
+        );
+      }
+
+      const expectedVersion =
+        Number(
+          (
+            req.body as
+              Record<
+                string,
+                unknown
+              >
+          )?.expectedVersion
+        );
+
+      if (
+        !Number.isInteger(
+          expectedVersion
+        ) ||
+        expectedVersion < 1
+      ) {
+        throw new ApiError(
+          400,
+          'EXPECTED_VERSION_REQUIRED',
+          'Informe a versão atual do rascunho.'
+        );
+      }
+
+      const notificationTargets =
+        getNotificationTargets();
+
+      const reviewBaseUrl =
+        String(
+          process.env
+            .PAYOUT_MANAGER_REVIEW_BASE_URL ||
+          ''
+        )
+          .trim()
+          .replace(
+            /\/+$/,
+            ''
+          );
+
+      const transition =
+        await prisma
+          .$transaction(
+            async tx => {
+              const rows =
+                await tx
+                  .$queryRawUnsafe<
+                    DatabaseRow[]
+                  >(
+                    `
+                      SELECT
+                        request.id::text,
+                        request.request_code,
+                        request.status,
+                        request.version,
+                        request.currency,
+                        request.requested_amount::text,
+                        request.external_reference,
+                        request.notes,
+
+                        store.id::text
+                          AS store_id,
+
+                        store.store_code,
+                        store.name
+                          AS store_name
+
+                      FROM public
+                        .payout_requests
+                          AS request
+
+                      JOIN public.stores
+                        AS store
+
+                        ON store.id =
+                          request.store_id
+
+                      WHERE request.id =
+                          $1::uuid
+
+                        AND request.merchant_id =
+                          $2::uuid
+
+                        AND request.deleted_at
+                          IS NULL
+
+                      FOR UPDATE OF request
+                    `,
+                    requestId,
+                    merchantId
+                  );
+
+              if (
+                rows.length !==
+                1
+              ) {
+                throw new ApiError(
+                  404,
+                  'PAYOUT_REQUEST_NOT_FOUND',
+                  'Pedido não encontrado.'
+                );
+              }
+
+              const current =
+                rows[0];
+
+              const currentStatus =
+                String(
+                  current.status
+                );
+
+              const currentVersion =
+                Number(
+                  current.version ||
+                  1
+                );
+
+              if (
+                currentStatus ===
+                  'requested'
+              ) {
+                return {
+                  changed:
+                    false,
+
+                  alreadyRequested:
+                    true,
+
+                  notificationTargets:
+                    0
+                };
+              }
+
+              if (
+                currentStatus !==
+                  'draft'
+              ) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_REQUEST_NOT_REQUESTABLE',
+                  'Somente rascunhos podem ser enviados ao Gerente.'
+                );
+              }
+
+              if (
+                currentVersion !==
+                  expectedVersion
+              ) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_REQUEST_VERSION_CONFLICT',
+                  'O rascunho foi alterado. Atualize a página.'
+                );
+              }
+
+              const updated =
+                await tx
+                  .$executeRawUnsafe(
+                    `
+                      UPDATE public
+                        .payout_requests
+
+                      SET
+                        status =
+                          'requested',
+
+                        requested_at =
+                          now(),
+
+                        version =
+                          version + 1,
+
+                        updated_at =
+                          now()
+
+                      WHERE id =
+                          $1::uuid
+
+                        AND merchant_id =
+                          $2::uuid
+
+                        AND status =
+                          'draft'
+
+                        AND version =
+                          $3::integer
+
+                        AND deleted_at
+                          IS NULL
+                    `,
+                    requestId,
+                    merchantId,
+                    expectedVersion
+                  );
+
+              if (updated !== 1) {
+                throw new ApiError(
+                  409,
+                  'PAYOUT_REQUEST_TRANSITION_CONFLICT',
+                  'Não foi possível enviar o pedido ao Gerente.'
+                );
+              }
+
+              const requestedAmount =
+                money(
+                  current
+                    .requested_amount
+                );
+
+              const reviewUrl =
+                reviewBaseUrl
+                  ? `${reviewBaseUrl}/${requestId}`
+                  : null;
+
+              await insertManagerNotification(
+                tx,
+                {
+                  requestId,
+                  merchantId,
+
+                  requestCode:
+                    String(
+                      current
+                        .request_code
+                    ),
+
+                  currency:
+                    String(
+                      current.currency
+                    ),
+
+                  requestedAmount,
+
+                  storeId:
+                    String(
+                      current.store_id
+                    ),
+
+                  storeCode:
+                    String(
+                      current
+                        .store_code ||
+                      ''
+                    ),
+
+                  storeName:
+                    String(
+                      current
+                        .store_name ||
+                      ''
+                    ),
+
+                  externalReference:
+                    current
+                      .external_reference ||
+                    null,
+
+                  notes:
+                    current.notes ||
+                    null,
+
+                  actorMerchantId:
+                    merchantId,
+
+                  reviewUrl,
+
+                  targets:
+                    notificationTargets
+                }
+              );
+
+              await insertEvent(
+                tx,
+                {
+                  requestId,
+                  merchantId,
+
+                  actorMerchantId:
+                    merchantId,
+
+                  eventType:
+                    'MANAGER_REQUESTED',
+
+                  fromStatus:
+                    'draft',
+
+                  toStatus:
+                    'requested',
+
+                  req,
+
+                  payload: {
+                    requestedAmount,
+
+                    notificationChannels:
+                      notificationTargets
+                        .map(
+                          target =>
+                            target.channel
+                        ),
+
+                    notificationCount:
+                      notificationTargets
+                        .length,
+
+                    notificationConfigured:
+                      notificationTargets
+                        .length > 0,
+
+                    noFinancialImpact:
+                      true,
+
+                    fundingReserved:
+                      false
+                  }
+                }
+              );
+
+              return {
+                changed:
+                  true,
+
+                alreadyRequested:
+                  false,
+
+                notificationTargets:
+                  notificationTargets
+                    .length
+              };
+            },
+            {
+              maxWait:
+                10000,
+
+              timeout:
+                30000,
+
+              isolationLevel:
+                Prisma
+                  .TransactionIsolationLevel
+                  .Serializable
+            }
+          );
+
+      const updated =
+        await fetchRequestById(
+          prisma,
+          merchantId,
+          requestId
+        );
+
+      if (!updated) {
+        throw new ApiError(
+          500,
+          'REQUEST_READ_FAILED',
+          'Pedido enviado, mas não foi possível relê-lo.'
+        );
+      }
+
+      return res.json({
+        success:
+          true,
+
+        data: {
+          request:
+            serializeRequest(
+              updated
+            ),
+
+          transition,
+
+          notification: {
+            queued:
+              transition
+                .notificationTargets,
+
+            configured:
+              transition
+                .notificationTargets >
+              0,
+
+            deliveryStarted:
+              false
+          },
+
+          financialImpact:
+            false
+        }
+      });
+    } catch (error) {
+      return respondError(
+        res,
+        error
+      );
+    }
+  };

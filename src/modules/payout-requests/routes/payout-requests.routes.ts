@@ -7,6 +7,7 @@ import {
   deletePayoutRequest,
   getPayoutFundingOptions,
   listPayoutRequests,
+  requestPayoutManager,
   updatePayoutRequest
 } from '../controllers/payout-requests.controller';
 
@@ -34,6 +35,11 @@ router.get(
 router.post(
   '/',
   createPayoutRequest
+);
+
+router.post(
+  '/:id/request-manager',
+  requestPayoutManager
 );
 
 router.patch(
