@@ -1,6 +1,10 @@
 import { Router } from 'express';
 
 import {
+  getFinanceDashboardV2
+} from '../controllers/finance-dashboard.controller';
+
+import {
   getFinanceOverview,
   getFinanceStores
 } from '../controllers/finance.controller';
@@ -9,6 +13,11 @@ import {
 } from '../controllers/finance-releases.controller';
 
 const router = Router();
+
+router.get(
+  '/dashboard',
+  getFinanceDashboardV2
+);
 
 router.get(
   '/overview',
