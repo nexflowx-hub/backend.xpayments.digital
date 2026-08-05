@@ -5380,7 +5380,7 @@ export const confirmPayoutRequest =
                 10000,
 
               timeout:
-                30000,
+                120000,
 
               isolationLevel:
                 Prisma
