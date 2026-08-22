@@ -268,6 +268,31 @@ export const handleMisticPayWebhook =
             }
           });
 
+        const merchantEvent =
+          newStatus === 'failed'
+            ? 'payment_intent.payment_failed'
+            : newStatus === 'canceled'
+              ? 'payment_intent.canceled'
+              : null;
+
+        if (merchantEvent) {
+          try {
+            await dispatchMerchantWebhook(
+              transaction.id,
+              merchantEvent,
+              {
+                method: 'pix',
+                status: newStatus
+              }
+            );
+          } catch (error) {
+            console.error(
+              '[PIX MERCHANT WEBHOOK ERROR]',
+              error
+            );
+          }
+        }
+
         return res
           .status(200)
           .json({
@@ -577,7 +602,7 @@ export const handleMisticPayWebhook =
         try {
           await dispatchMerchantWebhook(
             transaction.id,
-            'payment.succeeded',
+            'payment_intent.succeeded',
             {
               method:
                 'pix',
