@@ -1,6 +1,8 @@
 import { Router } from 'express';
 
 import * as directController from '../controllers/direct.controller';
+import * as pixController from '../controllers/pix.controller';
+import * as misticPayWebhook from '../controllers/misticpay.webhook';
 import * as stripeWebhook from '../controllers/stripe.webhook';
 import {
   syncStripeBalanceFromWebhookEvent
@@ -17,7 +19,32 @@ const router = Router();
 // ==========================================
 router.post(
   '/charge',
-  directController.processDirectCharge
+  (req, res) => {
+    const method = String(
+      req.body?.payment_method_types?.[0] ?? ''
+    )
+      .trim()
+      .toLowerCase()
+      .replace(/-/g, '_');
+
+    /*
+     * PIX segue adapter dedicado.
+     *
+     * Todos os demais métodos continuam
+     * exatamente no controller existente.
+     */
+    if (method === 'pix') {
+      return pixController.processPixCharge(
+        req,
+        res
+      );
+    }
+
+    return directController.processDirectCharge(
+      req,
+      res
+    );
+  }
 );
 
 // ==========================================
@@ -38,6 +65,19 @@ router.post(
 // - charge.updated funciona como segunda oportunidade quando a
 //   Balance Transaction ainda não estava pronta no primeiro evento;
 // - esta sincronização NÃO altera wallet, status do movimento ou payout.
+/*
+ * PIX inbound webhook.
+ *
+ * O payload recebido nunca produz
+ * crédito financeiro diretamente.
+ * O controller confirma o estado
+ * server-to-server antes do ledger.
+ */
+router.post(
+  '/webhooks/misticpay',
+  misticPayWebhook.handleMisticPayWebhook
+);
+
 router.post(
   '/webhooks/stripe',
   async (req, res) => {
