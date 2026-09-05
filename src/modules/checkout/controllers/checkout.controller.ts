@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { executePayment } from '../../payments/services/payment.service';
+import { executeCheckoutOrchestratedPayment } from '../services/checkout-orchestrator.service';
 import crypto from 'crypto';
 
 const prisma = new PrismaClient();
@@ -10,15 +11,142 @@ const PAYMENT_LABELS: Record<string, string> = {
   mb_way: 'MB WAY',
   multibanco: 'Multibanco',
   bizum: 'Bizum',
-  pix: 'PIX',
-  apple_pay: 'Apple Pay',
-  google_pay: 'Google Pay'
+  bancontact: 'Bancontact',
+  blik: 'BLIK',
+  revolut_pay: 'Revolut Pay',
+  amazon_pay: 'Amazon Pay',
+  satispay: 'Satispay'
 };
+
+const CHECKOUT_METHODS = new Set(Object.keys(PAYMENT_LABELS));
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const normaliseMethod = (value: unknown): string => {
+  const method = String(value ?? '').trim().toLowerCase().replace(/-/g, '_');
+  return method === 'mbway' ? 'mb_way' : method;
+};
+
+const parseRoutingRules = (value: unknown): Record<string, string> => {
+  try {
+    if (typeof value === 'string') return JSON.parse(value);
+    if (value && typeof value === 'object') return value as Record<string, string>;
+  } catch {}
+  return {};
+};
+
+const safeHttpsUrl = (value: unknown): string | undefined => {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol === 'https:' || url.hostname === 'localhost') return url.toString();
+  } catch {}
+  return undefined;
+};
+
+const publicMetadata = (metadata: unknown) => {
+  const source = metadata && typeof metadata === 'object'
+    ? metadata as Record<string, unknown>
+    : {};
+
+  const allowed = [
+    'description',
+    'customerName',
+    'customerEmail',
+    'returnUrl',
+    'allowedOrigin',
+    'theme',
+    'primaryColor'
+  ];
+
+  return Object.fromEntries(
+    allowed
+      .filter((key) => source[key] !== undefined && source[key] !== null)
+      .map((key) => [key, source[key]])
+  );
+};
+
+async function resolveSessionStatus(session: any): Promise<{
+  status: string;
+  transactionId?: string;
+}> {
+  let status = String(session.status || 'pending').toLowerCase();
+  let transactionId: string | undefined;
+
+  if (session.reference) {
+    const transaction = await prisma.transaction.findFirst({
+      where: {
+        storeId: session.storeId,
+        reference: session.reference
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (transaction) {
+      transactionId = transaction.id;
+      const txStatus = String(transaction.status || '').toLowerCase();
+      if (txStatus === 'succeeded') status = 'succeeded';
+      else if (['failed', 'cancelled', 'canceled'].includes(txStatus)) status = 'failed';
+      else if (txStatus) status = 'pending';
+    }
+  }
+
+  if (
+    status !== 'succeeded' &&
+    session.expiresAt &&
+    new Date(session.expiresAt).getTime() <= Date.now()
+  ) {
+    status = 'expired';
+  }
+
+  if (status !== String(session.status || '').toLowerCase()) {
+    await prisma.checkoutSession.update({
+      where: { id: session.id },
+      data: { status }
+    }).catch(() => undefined);
+  }
+
+  return { status, transactionId };
+}
+
+async function resolveCheckoutEnvironment(session: any): Promise<'live' | 'test'> {
+  const metadata = session.metadata && typeof session.metadata === 'object'
+    ? session.metadata as Record<string, unknown>
+    : {};
+
+  const metadataEnv = String(metadata._xpayments_checkout_environment || '').toLowerCase();
+  if (metadataEnv === 'test' || metadataEnv === 'live') return metadataEnv;
+
+  const vault = await prisma.gatewayVault.findFirst({
+    where: {
+      merchantId: session.merchantId,
+      isActive: true,
+      OR: [{ storeId: session.storeId }, { storeId: null }]
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  const credentials = vault?.credentials as any;
+  const secretKey = String(credentials?.secretKey || '');
+  return secretKey.includes('_test_') ? 'test' : 'live';
+}
 
 export const createSession = async (req: Request, res: Response) => {
   try {
-    const { amount, currency = 'EUR', reference, customerEmail, metadata } = req.body;
-    const apiKey = req.headers.authorization?.replace('Bearer ', '') || req.headers['x-api-key'] as string;
+    const {
+      amount,
+      currency = 'EUR',
+      reference,
+      customerEmail,
+      metadata = {},
+      returnUrl,
+      allowedOrigin,
+      expiresInMinutes
+    } = req.body || {};
+
+    const authorization = req.headers.authorization;
+    const apiKey = authorization?.startsWith('Bearer ')
+      ? authorization.slice('Bearer '.length).trim()
+      : String(req.headers['x-api-key'] || '').trim();
 
     if (!apiKey) {
       return res.status(401).json({ success: false, message: 'API Key não fornecida.' });
@@ -33,24 +161,60 @@ export const createSession = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, message: 'Acesso negado.' });
     }
 
-    // Converter cêntimos para Euros (ex: 2500 -> 25.00)
-    const amountInEur = Number(amount) / 100;
+    const scopes = Array.isArray((keyRecord as any).scopes) ? (keyRecord as any).scopes : [];
+    if (
+      scopes.length > 0 &&
+      !scopes.some((scope: string) => ['payments_write', 'payments', 'write'].includes(scope))
+    ) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'INSUFFICIENT_SCOPE', message: 'A API Key não possui permissão para criar checkout.' }
+      });
+    }
+
+    const amountMinor = Number(amount);
+    if (!Number.isInteger(amountMinor) || amountMinor <= 0) {
+      return res.status(400).json({ success: false, message: 'amount deve ser um inteiro positivo na menor unidade monetária.' });
+    }
+
+    const currencyUpper = String(currency).trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currencyUpper)) {
+      return res.status(400).json({ success: false, message: 'Moeda inválida.' });
+    }
+
     const sessionId = crypto.randomUUID();
     const checkoutUrl = `https://checkout.xpayments.digital/pay/${sessionId}`;
+    const embedUrl = `https://checkout.xpayments.digital/embed/${sessionId}`;
+    const minutes = Math.min(1440, Math.max(5, Number(expiresInMinutes) || 30));
+
+    const incomingMetadata = metadata && typeof metadata === 'object'
+      ? metadata as Record<string, unknown>
+      : {};
+
+    const mergedMetadata: Record<string, unknown> = {
+      ...incomingMetadata,
+      _xpayments_checkout_environment: String((keyRecord as any).environment || 'test').toLowerCase()
+    };
+
+    const safeReturnUrl = safeHttpsUrl(returnUrl ?? incomingMetadata.returnUrl);
+    const safeAllowedOrigin = safeHttpsUrl(allowedOrigin ?? incomingMetadata.allowedOrigin);
+    if (safeReturnUrl) mergedMetadata.returnUrl = safeReturnUrl;
+    if (safeAllowedOrigin) mergedMetadata.allowedOrigin = new URL(safeAllowedOrigin).origin;
+    if (customerEmail && !mergedMetadata.customerEmail) mergedMetadata.customerEmail = customerEmail;
 
     const session = await prisma.checkoutSession.create({
       data: {
         id: sessionId,
         merchantId: keyRecord.store.merchantId,
         storeId: keyRecord.store.id,
-        amount: amountInEur,
-        checkoutUrl: checkoutUrl,
-        currency,
-        reference: reference || `CHK-${Date.now()}`,
-        customerEmail,
-        metadata: metadata || {},
+        amount: amountMinor / 100,
+        checkoutUrl,
+        currency: currencyUpper,
+        reference: String(reference || `CHK-${keyRecord.store.storeCode}-${Date.now()}`),
+        customerEmail: customerEmail || null,
+        metadata: mergedMetadata as any,
         status: 'pending',
-        expiresAt: new Date(Date.now() + 30 * 60 * 1000)
+        expiresAt: new Date(Date.now() + minutes * 60 * 1000)
       }
     });
 
@@ -58,18 +222,24 @@ export const createSession = async (req: Request, res: Response) => {
       success: true,
       data: {
         sessionId: session.id,
-        checkoutUrl: session.checkoutUrl
+        checkoutUrl: session.checkoutUrl,
+        embedUrl,
+        expiresAt: session.expiresAt
       }
     });
   } catch (error) {
-    console.error(error);
+    console.error('[checkout.createSession]', error);
     return res.status(500).json({ success: false, message: 'Erro interno.' });
   }
 };
 
 export const loadSession = async (req: Request, res: Response) => {
   try {
-    const sessionId = String(req.params.sessionId);
+    const sessionId = String(req.params.sessionId || '').trim();
+    if (!UUID_RE.test(sessionId)) {
+      return res.status(400).json({ success: false, message: 'ID de sessão inválido.' });
+    }
+
     const session = await prisma.checkoutSession.findUnique({
       where: { id: sessionId },
       include: { store: true }
@@ -80,71 +250,175 @@ export const loadSession = async (req: Request, res: Response) => {
     }
 
     const store = (session as any).store;
-    const routingRules = (store?.routingRules as Record<string, string>) || {};
+    const routingRules = parseRoutingRules(store?.routingRules);
+    const paymentMethods = Object.entries(routingRules)
+      .map(([rawCode]) => normaliseMethod(rawCode))
+      .filter((code, index, all) => CHECKOUT_METHODS.has(code) && all.indexOf(code) === index)
+      .map((code) => ({ code, label: PAYMENT_LABELS[code] || code }));
 
-    const paymentMethods = Object.entries(routingRules).map(([code, provider]) => ({
-      code,
-      label: PAYMENT_LABELS[code] || code,
-      provider
-    }));
+    const state = await resolveSessionStatus(session);
+    const metadata = publicMetadata(session.metadata);
 
     return res.status(200).json({
       success: true,
       data: {
         sessionId: session.id,
+        storeId: session.storeId,
         storeName: store?.name || 'Store',
         amount: Number(session.amount),
         currency: session.currency,
         reference: session.reference,
         logoUrl: store?.logoUrl || null,
-        theme: store?.theme || 'light',
+        theme: (metadata as any).theme || store?.theme || 'light',
+        primaryColor: (metadata as any).primaryColor || '#111111',
+        description: (metadata as any).description || null,
+        metadata,
+        returnUrl: (metadata as any).returnUrl || null,
+        expiresAt: session.expiresAt,
+        status: state.status,
+        transactionId: state.transactionId || null,
         paymentMethods
       }
     });
-  } catch {
+  } catch (error) {
+    console.error('[checkout.loadSession]', error);
     return res.status(500).json({ success: false, message: 'Erro interno.' });
   }
 };
 
 export const initiatePayment = async (req: Request, res: Response) => {
   try {
-    const { sessionId, paymentMethod, customer } = req.body;
+    const {
+      sessionId,
+      paymentMethod,
+      customer = {},
+      returnUrl,
+      paymentMethodOptions
+    } = req.body || {};
 
-    if (!sessionId || !paymentMethod) {
-      return res.status(400).json({ success: false, message: 'Dados incompletos.' });
+    if (!sessionId || !paymentMethod || !UUID_RE.test(String(sessionId))) {
+      return res.status(400).json({ success: false, message: 'Dados incompletos ou sessão inválida.' });
     }
 
     const session = await prisma.checkoutSession.findUnique({
-      where: { id: String(sessionId) }
+      where: { id: String(sessionId) },
+      include: { store: true }
     });
 
     if (!session) {
       return res.status(404).json({ success: false, message: 'Sessão inválida.' });
     }
 
-    // Reconverter para cêntimos para o serviço Stripe (que espera cêntimos)
-    const result = await executePayment({
-      amount: Number(session.amount) * 100,
-      currency: session.currency,
-      paymentMethod,
-      storeId: session.storeId,
-      metadata: {
-        ...(session.metadata as object),
-        customerEmail: session.customerEmail,
-        ...customer
-      },
-      merchantReference: session.reference || `CHK-${session.id}`
+    const state = await resolveSessionStatus(session);
+    if (state.status === 'succeeded') {
+      return res.status(409).json({ success: false, error: { code: 'CHECKOUT_ALREADY_PAID', message: 'Checkout já pago.' } });
+    }
+    if (state.status === 'expired') {
+      return res.status(410).json({ success: false, error: { code: 'CHECKOUT_EXPIRED', message: 'Checkout expirado.' } });
+    }
+
+    const method = normaliseMethod(paymentMethod);
+    const routingRules = parseRoutingRules((session as any).store?.routingRules);
+    const allowedMethods = new Set(Object.keys(routingRules).map(normaliseMethod));
+
+    if (!CHECKOUT_METHODS.has(method) || !allowedMethods.has(method)) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'CHECKOUT_METHOD_NOT_AVAILABLE', message: `Método ${method} não disponível nesta Store.` }
+      });
+    }
+
+    const metadata = session.metadata && typeof session.metadata === 'object'
+      ? session.metadata as Record<string, unknown>
+      : {};
+
+    const checkoutReturnUrl =
+      safeHttpsUrl(returnUrl) ||
+      safeHttpsUrl(metadata.returnUrl) ||
+      `https://checkout.xpayments.digital/pay/${session.id}?return=1`;
+
+    const environment = await resolveCheckoutEnvironment(session);
+    const amountMinor = Math.round(Number(session.amount) * 100);
+    const merchantReference = session.reference || `CHK-${session.id}`;
+
+    let result: any;
+
+    if (method === 'card') {
+      result = await executePayment({
+        amount: amountMinor,
+        currency: session.currency,
+        paymentMethod: method,
+        storeId: session.storeId,
+        metadata: {
+          checkoutSessionId: session.id,
+          customerEmail: session.customerEmail,
+          ...customer
+        },
+        merchantReference,
+        environment
+      });
+    } else {
+      const orchestrated = await executeCheckoutOrchestratedPayment({
+        storeId: session.storeId,
+        environment,
+        amountMinor,
+        currency: session.currency,
+        reference: merchantReference,
+        paymentMethod: method,
+        customer,
+        returnUrl: checkoutReturnUrl,
+        paymentMethodOptions,
+        checkoutSessionId: session.id
+      });
+
+      const action = orchestrated?.action || null;
+      let checkoutData: Record<string, unknown> = {
+        providerTxId: orchestrated?.providerId,
+        status: orchestrated?.status,
+        actionType: action?.type || null,
+        message: action?.message || null
+      };
+
+      if (action?.type === 'multibanco_reference') {
+        checkoutData = {
+          entity: String(action.entidade || ''),
+          reference: String(action.referencia || ''),
+          amount: Number(session.amount),
+          providerTxId: orchestrated?.providerId,
+          status: orchestrated?.status
+        };
+      } else if (action?.url) {
+        checkoutData = {
+          ...checkoutData,
+          redirectUrl: String(action.url)
+        };
+      }
+
+      result = {
+        gateway: 'XPAYMENTS',
+        transactionId: orchestrated?.transactionId,
+        providerId: orchestrated?.providerId,
+        status: orchestrated?.status,
+        method: orchestrated?.method || method,
+        action,
+        checkoutData
+      };
+    }
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (error: any) {
+    console.error('[checkout.initiatePayment]', {
+      code: error?.code,
+      message: error?.message
     });
 
-    return res.status(200).json({
-      success: true,
-      data: result
-    });
-  } catch (error: any) {
-    console.error(error);
-    return res.status(400).json({
+    return res.status(error?.status && error.status >= 400 && error.status < 600 ? error.status : 400).json({
       success: false,
-      message: error.message || 'Erro ao iniciar pagamento.'
+      error: {
+        code: error?.code || 'CHECKOUT_INITIATE_FAILED',
+        message: error?.message || 'Erro ao iniciar pagamento.'
+      },
+      message: error?.message || 'Erro ao iniciar pagamento.'
     });
   }
 };
