@@ -81,10 +81,34 @@ docker exec "$CONTAINER" sh -lc '
   set -e
   cd /app
   rm -rf /tmp/xpayments-checkout-vnext-build
+  rm -f /tmp/xpayments-checkout-vnext-tsconfig.json
+
+  cat >/tmp/xpayments-checkout-vnext-tsconfig.json <<"JSON"
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "rootDir": "/app/src",
+    "outDir": "/tmp/xpayments-checkout-vnext-build",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "moduleResolution": "node",
+    "noEmitOnError": true
+  },
+  "files": [
+    "/app/src/modules/checkout/controllers/checkout.controller.ts",
+    "/app/src/modules/checkout/services/checkout-orchestrator.service.ts",
+    "/app/src/modules/payments/services/payment.service.ts"
+  ]
+}
+JSON
+
   ./node_modules/.bin/tsc \
-    --project tsconfig.json \
-    --outDir /tmp/xpayments-checkout-vnext-build \
-    --rootDir /app/src
+    --project /tmp/xpayments-checkout-vnext-tsconfig.json
+
   test -f /tmp/xpayments-checkout-vnext-build/modules/checkout/controllers/checkout.controller.js
   test -f /tmp/xpayments-checkout-vnext-build/modules/checkout/services/checkout-orchestrator.service.js
   test -f /tmp/xpayments-checkout-vnext-build/modules/payments/services/payment.service.js
