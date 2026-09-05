@@ -3,6 +3,14 @@ import Stripe from 'stripe';
 
 const prisma = new PrismaClient();
 
+const parseRoutingRules = (value: unknown): Record<string, string> => {
+    try {
+        if (typeof value === 'string') return JSON.parse(value);
+        if (value && typeof value === 'object') return value as Record<string, string>;
+    } catch {}
+    return {};
+};
+
 export const executePayment = async (data: {
     amount: number;
     currency: string;
@@ -10,7 +18,12 @@ export const executePayment = async (data: {
     storeId: string;
     metadata: any;
     merchantReference: string;
+    environment?: 'live' | 'test';
 }) => {
+    const amountMinor = Number(data.amount);
+    if (!Number.isInteger(amountMinor) || amountMinor <= 0) {
+        throw new Error('INVALID_AMOUNT');
+    }
 
     const store = await prisma.store.findUnique({
         where: { id: data.storeId }
@@ -24,34 +37,74 @@ export const executePayment = async (data: {
         where: {
             merchantId: store.merchantId,
             isActive: true,
-            OR: [ { storeId: null }, { storeId: store.id } ]
+            OR: [{ storeId: null }, { storeId: store.id }]
         }
     });
 
-    const routingRules: any = store.routingRules || {};
-    let targetProvider = routingRules[data.paymentMethod];
+    const routingRules = parseRoutingRules(store.routingRules);
+    const method = String(data.paymentMethod || 'card').toLowerCase().replace(/-/g, '_');
+    let targetProvider = routingRules[method];
 
     if (!targetProvider) {
-        targetProvider = availableVaults.find(v =>
-            v.provider.toLowerCase() === data.paymentMethod.toLowerCase()
+        targetProvider = availableVaults.find((v) =>
+            v.provider.toLowerCase() === method
         )?.provider;
     }
 
-    if (!targetProvider) {
-        targetProvider = availableVaults[0]?.provider;
+    if (!targetProvider && method === 'card') {
+        targetProvider = availableVaults.find((v) =>
+            v.provider.toLowerCase().startsWith('stripe')
+        )?.provider;
     }
 
-    const gatewayVault = availableVaults.find(v =>
+    if (!targetProvider) targetProvider = availableVaults[0]?.provider;
+
+    const gatewayVault = availableVaults.find((v) =>
         v.provider.toLowerCase() === targetProvider?.toLowerCase()
     );
 
     if (!gatewayVault) {
-        throw new Error(`Nenhum Gateway configurado para ${data.paymentMethod}`);
+        throw new Error(`Nenhum Gateway configurado para ${method}`);
+    }
+
+    if (!gatewayVault.provider.toLowerCase().startsWith('stripe')) {
+        throw new Error(`Provider ${gatewayVault.provider} ainda não suportado pelo adapter de cartão.`);
+    }
+
+    const credentials: any = gatewayVault.credentials || {};
+    const secretKey = String(credentials.secretKey || '').trim();
+    const publicKey = String(
+        credentials.publishableKey || credentials.publicKey || ''
+    ).trim();
+
+    if (!secretKey || !publicKey) {
+        throw new Error('Credenciais Stripe incompletas para o Checkout.');
+    }
+
+    const stripeEnvironment = secretKey.startsWith('sk_test_') || secretKey.startsWith('rk_test_')
+        ? 'test'
+        : secretKey.startsWith('sk_live_') || secretKey.startsWith('rk_live_')
+            ? 'live'
+            : 'unknown';
+
+    if (data.environment && stripeEnvironment !== data.environment) {
+        throw new Error(
+            data.environment === 'live'
+                ? 'LIVE_KEY_TEST_GATEWAY_MISMATCH'
+                : 'TEST_KEY_LIVE_GATEWAY_MISMATCH'
+        );
     }
 
     let transaction = await prisma.transaction.findFirst({
-        where: { reference: data.merchantReference }
+        where: {
+            merchantId: store.merchantId,
+            reference: data.merchantReference
+        }
     });
+
+    if (transaction?.status === 'succeeded') {
+        throw new Error('TRANSACTION_ALREADY_PAID');
+    }
 
     if (!transaction) {
         transaction = await prisma.transaction.create({
@@ -60,77 +113,104 @@ export const executePayment = async (data: {
                 storeId: store.id,
                 gatewayVaultId: gatewayVault.id,
                 reference: data.merchantReference,
-                amount: data.amount,
-                currency: data.currency,
+                amount: amountMinor / 100,
+                currency: data.currency.toUpperCase(),
                 status: 'pending',
-                method: data.paymentMethod,
-                gateway: gatewayVault.provider
+                method,
+                gateway: gatewayVault.provider,
+                customerEmail: data.metadata?.email || data.metadata?.customerEmail || null,
+                rawRequest: {
+                    source: 'CHECKOUT',
+                    amount: amountMinor,
+                    currency: data.currency.toUpperCase(),
+                    paymentMethod: method,
+                    checkoutSessionId: data.metadata?.checkoutSessionId || null
+                } as any
+            }
+        });
+    } else {
+        const canReuseProviderIntent =
+            transaction.providerId &&
+            transaction.status === 'pending' &&
+            transaction.method === method &&
+            transaction.gatewayVaultId === gatewayVault.id;
+
+        transaction = await prisma.transaction.update({
+            where: { id: transaction.id },
+            data: {
+                storeId: store.id,
+                gatewayVaultId: gatewayVault.id,
+                amount: amountMinor / 100,
+                currency: data.currency.toUpperCase(),
+                status: 'pending',
+                method,
+                gateway: gatewayVault.provider,
+                customerEmail: data.metadata?.email || data.metadata?.customerEmail || null,
+                ...(canReuseProviderIntent ? {} : { providerId: null })
             }
         });
     }
 
-    if (gatewayVault.provider.toLowerCase().startsWith('stripe')) {
-        const credentials: any = gatewayVault.credentials;
-        const stripeClient = new Stripe(credentials.secretKey, { apiVersion: '2026-06-24.dahlia' as any });
+    const stripeClient = new Stripe(secretKey, {
+        apiVersion: '2026-06-24.dahlia' as any
+    });
 
-        if (transaction.providerId) {
-            const paymentIntent = await stripeClient.paymentIntents.retrieve(transaction.providerId);
-            return {
-                transactionId: transaction.id,
-                gateway: 'STRIPE',
-                checkoutData: { clientSecret: paymentIntent.client_secret, providerTxId: paymentIntent.id, publicKey: credentials.publicKey },
-                providerAction: paymentIntent
-            };
-        }
-
-        const methodMapping: Record<string, string[]> = {
-            card: ['card'],
-            visa: ['card'],
-            mastercard: ['card'],
-            amex: ['card'],
-            pix: ['pix'],
-            multibanco: ['multibanco'],
-            mb_way: ['mb_way'], // CORRIGIDO
-            mbway: ['mb_way'],  // CORRIGIDO
-            bizum: ['bizum'],
-            ideal: ['ideal'],
-            bancontact: ['bancontact'],
-            blik: ['blik'],
-            eps: ['eps'],
-            klarna: ['klarna'],
-            amazon_pay: ['amazon_pay']
-        };
-
-        const paymentMethodTypes = methodMapping[data.paymentMethod.toLowerCase()] || ['card'];
-
-        const stripePayload: any = {
-            amount: data.amount,
-            currency: data.currency.toLowerCase(),
-            payment_method_types: paymentMethodTypes,
-            metadata: {
-                nexflowx_transaction_id: transaction.id,
-                nexor_reference: data.merchantReference,
-                ...(data.metadata || {})
-            }
-        };
-
-        const paymentIntent = await stripeClient.paymentIntents.create(stripePayload);
-
-        await prisma.transaction.update({
-            where: { id: transaction.id },
-            data: {
-                providerId: paymentIntent.id,
-                rawResponse: JSON.parse(JSON.stringify(paymentIntent))
-            }
-        });
-
+    if (transaction.providerId) {
+        const paymentIntent = await stripeClient.paymentIntents.retrieve(transaction.providerId);
         return {
             transactionId: transaction.id,
             gateway: 'STRIPE',
-            checkoutData: { clientSecret: paymentIntent.client_secret, providerTxId: paymentIntent.id, publicKey: credentials.publicKey },
+            checkoutData: {
+                clientSecret: paymentIntent.client_secret,
+                providerTxId: paymentIntent.id,
+                publicKey
+            },
             providerAction: paymentIntent
         };
     }
 
-    throw new Error(`Provider ${gatewayVault.provider} ainda não suportado.`);
+    const paymentMethodTypes = method === 'card' ? ['card'] : [method];
+    const stripePayload: Stripe.PaymentIntentCreateParams = {
+        amount: amountMinor,
+        currency: data.currency.toLowerCase(),
+        payment_method_types: paymentMethodTypes as any,
+        metadata: {
+            nexflowx_transaction_id: transaction.id,
+            merchant_reference: data.merchantReference,
+            ...(data.metadata?.checkoutSessionId
+                ? { checkout_session_id: String(data.metadata.checkoutSessionId) }
+                : {})
+        }
+    };
+
+    const idempotencyKey = [
+        'xpayments-checkout',
+        store.id,
+        data.merchantReference,
+        method
+    ].join(':').slice(0, 255);
+
+    const paymentIntent = await stripeClient.paymentIntents.create(
+        stripePayload,
+        { idempotencyKey }
+    );
+
+    await prisma.transaction.update({
+        where: { id: transaction.id },
+        data: {
+            providerId: paymentIntent.id,
+            rawResponse: JSON.parse(JSON.stringify(paymentIntent))
+        }
+    });
+
+    return {
+        transactionId: transaction.id,
+        gateway: 'STRIPE',
+        checkoutData: {
+            clientSecret: paymentIntent.client_secret,
+            providerTxId: paymentIntent.id,
+            publicKey
+        },
+        providerAction: paymentIntent
+    };
 };
