@@ -43,15 +43,18 @@ export const executePayment = async (data: {
 
     const routingRules = parseRoutingRules(store.routingRules);
     const method = String(data.paymentMethod || 'card').toLowerCase().replace(/-/g, '_');
-    let targetProvider: string | undefined = routingRules[method];
+    const dynamicStripeMode = method === 'stripe_all';
+    let targetProvider: string | undefined = dynamicStripeMode
+        ? routingRules.card
+        : routingRules[method];
 
-    if (!targetProvider) {
+    if (!targetProvider && !dynamicStripeMode) {
         targetProvider = availableVaults.find((v) =>
             v.provider.toLowerCase() === method
         )?.provider;
     }
 
-    if (!targetProvider && method === 'card') {
+    if (!targetProvider && (method === 'card' || dynamicStripeMode)) {
         targetProvider = availableVaults.find((v) =>
             v.provider.toLowerCase().startsWith('stripe')
         )?.provider;
@@ -163,24 +166,26 @@ export const executePayment = async (data: {
             checkoutData: {
                 clientSecret: paymentIntent.client_secret,
                 providerTxId: paymentIntent.id,
-                publicKey
+                publicKey,
+                dynamicMethods: dynamicStripeMode
             },
             providerAction: paymentIntent
         };
     }
 
-    const paymentMethodTypes = method === 'card' ? ['card'] : [method];
     const stripePayload: Stripe.PaymentIntentCreateParams = {
         amount: amountMinor,
         currency: data.currency.toLowerCase(),
-        payment_method_types: paymentMethodTypes as any,
         metadata: {
             nexflowx_transaction_id: transaction.id,
             merchant_reference: data.merchantReference,
             ...(data.metadata?.checkoutSessionId
                 ? { checkout_session_id: String(data.metadata.checkoutSessionId) }
                 : {})
-        }
+        },
+        ...(dynamicStripeMode
+            ? { automatic_payment_methods: { enabled: true } }
+            : { payment_method_types: ['card'] as any })
     };
 
     const idempotencyKey = [
@@ -209,7 +214,8 @@ export const executePayment = async (data: {
         checkoutData: {
             clientSecret: paymentIntent.client_secret,
             providerTxId: paymentIntent.id,
-            publicKey
+            publicKey,
+            dynamicMethods: dynamicStripeMode
         },
         providerAction: paymentIntent
     };
