@@ -20,6 +20,12 @@ const PAYMENT_LABELS: Record<string, string> = {
 
 const CHECKOUT_METHODS = new Set(Object.keys(PAYMENT_LABELS));
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const INTERNAL_STRIPE_WEBHOOK_URL =
+  process.env.XPAYMENTS_INTERNAL_STRIPE_WEBHOOK_URL ||
+  'http://127.0.0.1:8084/api/v1/payments/webhooks/stripe';
+const providerReconcileAt = new Map<string, number>();
+const PROVIDER_RECONCILE_MIN_AGE_MS = 10_000;
+const PROVIDER_RECONCILE_THROTTLE_MS = 10_000;
 
 const normaliseMethod = (value: unknown): string => {
   const method = String(value ?? '').trim().toLowerCase().replace(/-/g, '_');
@@ -65,6 +71,91 @@ const publicMetadata = (metadata: unknown) => {
   );
 };
 
+const providerEventType = (paymentIntent: any): string | null => {
+  const status = String(paymentIntent?.status || '').toLowerCase();
+  if (status === 'succeeded') return 'payment_intent.succeeded';
+  if (status === 'processing') return 'payment_intent.processing';
+  if (status === 'canceled') return 'payment_intent.canceled';
+  if (status === 'requires_payment_method') return 'payment_intent.payment_failed';
+  return null;
+};
+
+async function reconcilePendingStripeTransaction(transaction: any): Promise<boolean> {
+  const providerId = String(transaction?.providerId || '').trim();
+  if (!providerId.startsWith('pi_')) return false;
+
+  const createdAt = transaction?.createdAt ? new Date(transaction.createdAt).getTime() : 0;
+  if (createdAt && Date.now() - createdAt < PROVIDER_RECONCILE_MIN_AGE_MS) return false;
+
+  const previous = providerReconcileAt.get(transaction.id) || 0;
+  if (Date.now() - previous < PROVIDER_RECONCILE_THROTTLE_MS) return false;
+  providerReconcileAt.set(transaction.id, Date.now());
+
+  try {
+    const vault = transaction.gatewayVaultId
+      ? await prisma.gatewayVault.findUnique({ where: { id: transaction.gatewayVaultId } })
+      : null;
+
+    const credentials = vault?.credentials as any;
+    const secretKey = String(credentials?.secretKey || '').trim();
+    if (!secretKey || !vault?.provider?.toLowerCase().startsWith('stripe')) return false;
+
+    const stripeResponse = await fetch(
+      `https://api.stripe.com/v1/payment_intents/${encodeURIComponent(providerId)}`,
+      { headers: { Authorization: `Bearer ${secretKey}` } }
+    );
+
+    if (!stripeResponse.ok) {
+      console.warn('[checkout.providerReconcile] stripe retrieve failed', {
+        transactionId: transaction.id,
+        providerId,
+        status: stripeResponse.status
+      });
+      return false;
+    }
+
+    const paymentIntent = await stripeResponse.json();
+    const eventType = providerEventType(paymentIntent);
+    if (!eventType) return false;
+
+    const replayResponse = await fetch(INTERNAL_STRIPE_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: `evt_xpayments_checkout_reconcile_${providerId}_${paymentIntent.status}`,
+        object: 'event',
+        type: eventType,
+        data: { object: paymentIntent }
+      })
+    });
+
+    if (!replayResponse.ok) {
+      console.warn('[checkout.providerReconcile] internal webhook replay failed', {
+        transactionId: transaction.id,
+        providerId,
+        eventType,
+        status: replayResponse.status
+      });
+      return false;
+    }
+
+    providerReconcileAt.delete(transaction.id);
+    console.log('[checkout.providerReconcile] recovered', {
+      transactionId: transaction.id,
+      providerId,
+      eventType
+    });
+    return true;
+  } catch (error: any) {
+    console.warn('[checkout.providerReconcile] failed', {
+      transactionId: transaction?.id,
+      providerId,
+      message: error?.message || String(error)
+    });
+    return false;
+  }
+}
+
 async function resolveSessionStatus(session: any): Promise<{
   status: string;
   transactionId?: string;
@@ -73,7 +164,7 @@ async function resolveSessionStatus(session: any): Promise<{
   let transactionId: string | undefined;
 
   if (session.reference) {
-    const transaction = await prisma.transaction.findFirst({
+    let transaction = await prisma.transaction.findFirst({
       where: {
         storeId: session.storeId,
         reference: session.reference
@@ -83,7 +174,18 @@ async function resolveSessionStatus(session: any): Promise<{
 
     if (transaction) {
       transactionId = transaction.id;
-      const txStatus = String(transaction.status || '').toLowerCase();
+      const initialTxStatus = String(transaction.status || '').toLowerCase();
+
+      if (['pending', 'processing'].includes(initialTxStatus)) {
+        const reconciled = await reconcilePendingStripeTransaction(transaction);
+        if (reconciled) {
+          transaction = await prisma.transaction.findUnique({
+            where: { id: transaction.id }
+          });
+        }
+      }
+
+      const txStatus = String(transaction?.status || '').toLowerCase();
       if (txStatus === 'succeeded') status = 'succeeded';
       else if (['failed', 'cancelled', 'canceled'].includes(txStatus)) status = 'failed';
       else if (txStatus) status = 'pending';
