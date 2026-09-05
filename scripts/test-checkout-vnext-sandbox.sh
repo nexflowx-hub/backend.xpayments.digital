@@ -31,6 +31,10 @@ fi
 echo "SANDBOX_KEY_LOADED=PASS"
 echo "REFERENCE=$REF"
 
+INTERNAL_HTTP="$(docker exec "$CONTAINER" sh -lc "node -e \"fetch('http://127.0.0.1:8084/api/health').then(async r=>{console.log(r.status);process.exit(r.ok?0:1)}).catch(e=>{console.error(e.message);process.exit(2)})\"")"
+[ "$INTERNAL_HTTP" = "200" ]
+echo "INTERNAL_API_8084=PASS"
+
 CREATE_JSON="$(curl -fsS \
   -X POST https://api.xpayments.digital/api/v1/checkout/session \
   -H "Authorization: Bearer ${XPAY_RZEURO_XPAY_SANDBOX_API_KEY}" \
@@ -98,7 +102,23 @@ print('CHECKOUT_SESSION_LOAD=PASS')
 print('CHECKOUT_METHODS=PASS')
 PY
 
-INIT_JSON="$(curl -fsS \
+# Guarantee this fresh reference has no pre-existing transaction.
+docker exec \
+  -e REF="$REF" \
+  "$CONTAINER" \
+  sh -lc 'cd /app && DATABASE_URL="$DIRECT_URL" NODE_PATH=/app/node_modules node' <<'NODE'
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+(async () => {
+  const count = await prisma.transaction.count({ where: { reference: process.env.REF } });
+  if (count !== 0) throw new Error(`PREINIT_TRANSACTION_EXISTS:${count}`);
+  console.log('CHECKOUT_PREINIT_TRANSACTION_COUNT=0');
+})().finally(() => prisma.$disconnect());
+NODE
+
+INIT_HTTP="$(curl -sS \
+  -o /tmp/xp-checkout-init.json \
+  -w '%{http_code}' \
   -X POST https://api.xpayments.digital/api/v1/checkout/initiate \
   -H 'Content-Type: application/json' \
   -d "{
@@ -112,7 +132,24 @@ INIT_JSON="$(curl -fsS \
     }
   }")"
 
-printf '%s' "$INIT_JSON" >/tmp/xp-checkout-init.json
+echo "INIT_HTTP=$INIT_HTTP"
+
+if [ "$INIT_HTTP" != "200" ]; then
+  python3 - <<'PY'
+import json
+try:
+    x=json.load(open('/tmp/xp-checkout-init.json'))
+    safe={
+      'success': x.get('success'),
+      'error': x.get('error'),
+      'message': x.get('message')
+    }
+    print('INIT_ERROR=' + json.dumps(safe, ensure_ascii=False))
+except Exception as e:
+    print('INIT_ERROR_UNPARSEABLE=' + str(e))
+PY
+  exit 1
+fi
 
 TX_ID="$(python3 - <<'PY'
 import json
@@ -121,6 +158,7 @@ assert x.get('success') is True, x
 d=x.get('data',{})
 tx=d.get('transactionId')
 assert tx, d
+assert d.get('method') == 'mb_way', d
 cd=d.get('checkoutData',{})
 assert cd.get('providerTxId'), cd
 assert cd.get('status') in ('requires_action','processing','succeeded'), cd
@@ -131,8 +169,24 @@ PY
 echo "CHECKOUT_INITIATE_MBWAY=PASS"
 echo "TRANSACTION_ID=$TX_ID"
 
+docker exec \
+  -e TX_ID="$TX_ID" \
+  "$CONTAINER" \
+  sh -lc 'cd /app && DATABASE_URL="$DIRECT_URL" NODE_PATH=/app/node_modules node' <<'NODE'
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+(async () => {
+  const tx = await prisma.transaction.findUnique({ where: { id: process.env.TX_ID } });
+  if (!tx) throw new Error('TRANSACTION_NOT_FOUND_AFTER_INIT');
+  if (Number(tx.amount) !== 5) throw new Error(`INVALID_TRANSACTION_AMOUNT:${tx.amount}`);
+  if (tx.method !== 'mb_way') throw new Error(`INVALID_METHOD_AFTER_INIT:${tx.method}`);
+  console.log('CHECKOUT_INIT_TRANSACTION_METHOD=mb_way');
+  console.log('TRANSACTION_AMOUNT_MAJOR_UNITS=PASS');
+})().finally(() => prisma.$disconnect());
+NODE
+
 FINAL_STATUS="pending"
-for i in $(seq 1 30); do
+for i in $(seq 1 40); do
   curl -fsS \
     "https://api.xpayments.digital/api/v1/checkout/session/${SESSION_ID}" \
     >/tmp/xp-checkout-poll.json
@@ -168,20 +222,14 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 (async () => {
-  const tx = await prisma.transaction.findUnique({
-    where: { id: process.env.TX_ID }
-  });
-
+  const tx = await prisma.transaction.findUnique({ where: { id: process.env.TX_ID } });
   if (!tx) throw new Error('TRANSACTION_NOT_FOUND');
   if (Number(tx.amount) !== 5) throw new Error(`INVALID_TRANSACTION_AMOUNT:${tx.amount}`);
   if (tx.currency !== 'EUR') throw new Error(`INVALID_CURRENCY:${tx.currency}`);
   if (tx.method !== 'mb_way') throw new Error(`INVALID_METHOD:${tx.method}`);
   if (tx.status !== 'succeeded') throw new Error(`INVALID_STATUS:${tx.status}`);
 
-  const session = await prisma.checkoutSession.findUnique({
-    where: { id: process.env.SESSION_ID }
-  });
-
+  const session = await prisma.checkoutSession.findUnique({ where: { id: process.env.SESSION_ID } });
   if (!session) throw new Error('CHECKOUT_SESSION_NOT_FOUND');
   if (session.status !== 'succeeded') throw new Error(`INVALID_SESSION_STATUS:${session.status}`);
 
@@ -203,7 +251,6 @@ const prisma = new PrismaClient();
 })();
 NODE
 
-echo "TRANSACTION_AMOUNT_MAJOR_UNITS=PASS"
 echo "CHECKOUT_SANDBOX_E2E=PASS"
 echo "REPORT=$REPORT"
 unset XPAY_RZEURO_XPAY_SANDBOX_API_KEY
