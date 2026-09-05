@@ -43,7 +43,7 @@ export const executePayment = async (data: {
 
     const routingRules = parseRoutingRules(store.routingRules);
     const method = String(data.paymentMethod || 'card').toLowerCase().replace(/-/g, '_');
-    let targetProvider = routingRules[method];
+    let targetProvider: string | undefined = routingRules[method];
 
     if (!targetProvider) {
         targetProvider = availableVaults.find((v) =>
