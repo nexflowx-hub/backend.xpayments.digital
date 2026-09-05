@@ -4,7 +4,7 @@ const prisma = new PrismaClient();
 
 const INTERNAL_CHARGE_URL =
   process.env.XPAYMENTS_INTERNAL_CHARGE_URL ||
-  'http://127.0.0.1:3001/api/v1/payments/charge';
+  'http://127.0.0.1:8084/api/v1/payments/charge';
 
 const normaliseMethod = (value: unknown): string => {
   const method = String(value ?? '').trim().toLowerCase().replace(/-/g, '_');
@@ -44,9 +44,12 @@ export async function executeCheckoutOrchestratedPayment(
   );
 
   if (!keyRecord) {
-    throw new Error(
+    const error = new Error(
       `CHECKOUT_PAYMENTS_WRITE_KEY_MISSING:${input.storeId}:${input.environment}`
-    );
+    ) as Error & { code?: string; status?: number };
+    error.code = 'CHECKOUT_PAYMENTS_WRITE_KEY_MISSING';
+    error.status = 500;
+    throw error;
   }
 
   const method = normaliseMethod(input.paymentMethod);
@@ -67,14 +70,26 @@ export async function executeCheckoutOrchestratedPayment(
       : {})
   };
 
-  const response = await fetch(INTERNAL_CHARGE_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${keyRecord.key}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(INTERNAL_CHARGE_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${keyRecord.key}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+  } catch (cause) {
+    const error = new Error(
+      'Checkout não conseguiu comunicar com o motor interno de pagamentos.'
+    ) as Error & { code?: string; status?: number; cause?: unknown };
+    error.code = 'CHECKOUT_ORCHESTRATOR_UNREACHABLE';
+    error.status = 502;
+    error.cause = cause;
+    throw error;
+  }
 
   const raw = await response.json().catch(() => ({}));
 
