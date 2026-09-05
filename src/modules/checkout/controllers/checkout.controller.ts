@@ -8,6 +8,7 @@ const prisma = new PrismaClient();
 
 const PAYMENT_LABELS: Record<string, string> = {
   card: 'Cartão',
+  stripe_all: 'Mais opções',
   mb_way: 'MB WAY',
   multibanco: 'Multibanco',
   bizum: 'Bizum',
@@ -40,6 +41,16 @@ const parseRoutingRules = (value: unknown): Record<string, string> => {
   return {};
 };
 
+const parseStoreTheme = (value: unknown): Record<string, unknown> => {
+  if (typeof value !== 'string' || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+  } catch {
+    return { mode: value === 'dark' ? 'dark' : 'light' };
+  }
+};
+
 const safeHttpsUrl = (value: unknown): string | undefined => {
   if (typeof value !== 'string' || !value.trim()) return undefined;
   try {
@@ -61,7 +72,9 @@ const publicMetadata = (metadata: unknown) => {
     'returnUrl',
     'allowedOrigin',
     'theme',
-    'primaryColor'
+    'primaryColor',
+    'checkoutDisplayName',
+    'autoReturnSeconds'
   ];
 
   return Object.fromEntries(
@@ -179,9 +192,7 @@ async function resolveSessionStatus(session: any): Promise<{
       if (['pending', 'processing'].includes(initialTxStatus)) {
         const reconciled = await reconcilePendingStripeTransaction(transaction);
         if (reconciled) {
-          transaction = await prisma.transaction.findUnique({
-            where: { id: transaction.id }
-          });
+          transaction = await prisma.transaction.findUnique({ where: { id: transaction.id } });
         }
       }
 
@@ -358,24 +369,48 @@ export const loadSession = async (req: Request, res: Response) => {
       .filter((code, index, all) => CHECKOUT_METHODS.has(code) && all.indexOf(code) === index)
       .map((code) => ({ code, label: PAYMENT_LABELS[code] || code }));
 
+    const hasStripe = Object.values(routingRules).some((provider) =>
+      String(provider).toLowerCase().startsWith('stripe')
+    );
+    if (hasStripe && !paymentMethods.some((method) => method.code === 'stripe_all')) {
+      paymentMethods.push({ code: 'stripe_all', label: PAYMENT_LABELS.stripe_all });
+    }
+
     const state = await resolveSessionStatus(session);
-    const metadata = publicMetadata(session.metadata);
+    const metadata = publicMetadata(session.metadata) as Record<string, unknown>;
+    const storeTheme = parseStoreTheme(store?.theme);
+    const displayName = String(
+      metadata.checkoutDisplayName || storeTheme.checkoutDisplayName || store?.name || 'Store'
+    );
+    const themeMode = String(metadata.theme || storeTheme.mode || 'light');
+    const primaryColor = String(metadata.primaryColor || storeTheme.primaryColor || '#111111');
+    const autoReturnSeconds = Math.min(
+      10,
+      Math.max(0, Number(metadata.autoReturnSeconds ?? storeTheme.autoReturnSeconds ?? 3))
+    );
 
     return res.status(200).json({
       success: true,
       data: {
         sessionId: session.id,
         storeId: session.storeId,
-        storeName: store?.name || 'Store',
+        storeName: displayName,
+        internalStoreName: store?.name || 'Store',
         amount: Number(session.amount),
         currency: session.currency,
         reference: session.reference,
         logoUrl: store?.logoUrl || null,
-        theme: (metadata as any).theme || store?.theme || 'light',
-        primaryColor: (metadata as any).primaryColor || '#111111',
-        description: (metadata as any).description || null,
-        metadata,
-        returnUrl: (metadata as any).returnUrl || null,
+        theme: themeMode,
+        primaryColor,
+        autoReturnSeconds,
+        localeMode: String(storeTheme.localeMode || 'auto'),
+        description: metadata.description || null,
+        metadata: {
+          ...metadata,
+          checkoutDisplayName: displayName,
+          autoReturnSeconds
+        },
+        returnUrl: metadata.returnUrl || null,
         expiresAt: session.expiresAt,
         status: state.status,
         transactionId: state.transactionId || null,
@@ -422,8 +457,12 @@ export const initiatePayment = async (req: Request, res: Response) => {
     const method = normaliseMethod(paymentMethod);
     const routingRules = parseRoutingRules((session as any).store?.routingRules);
     const allowedMethods = new Set(Object.keys(routingRules).map(normaliseMethod));
+    const hasStripe = Object.values(routingRules).some((provider) =>
+      String(provider).toLowerCase().startsWith('stripe')
+    );
+    const dynamicStripeAllowed = method === 'stripe_all' && hasStripe;
 
-    if (!CHECKOUT_METHODS.has(method) || !allowedMethods.has(method)) {
+    if (!CHECKOUT_METHODS.has(method) || (!allowedMethods.has(method) && !dynamicStripeAllowed)) {
       return res.status(400).json({
         success: false,
         error: { code: 'CHECKOUT_METHOD_NOT_AVAILABLE', message: `Método ${method} não disponível nesta Store.` }
@@ -445,7 +484,7 @@ export const initiatePayment = async (req: Request, res: Response) => {
 
     let result: any;
 
-    if (method === 'card') {
+    if (method === 'card' || method === 'stripe_all') {
       result = await executePayment({
         amount: amountMinor,
         currency: session.currency,
