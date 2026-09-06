@@ -63,6 +63,40 @@ const formatWebhook = (webhook: any) => ({
   createdAt: webhook.createdAt.toISOString()
 });
 
+const WRITE_SCOPES = new Set([
+  'payments_write',
+  'payments',
+  'write'
+]);
+
+const getOrchestratedVault = async (
+  merchantId: string,
+  storeId: string
+) => {
+  const vaults = await prisma.gatewayVault.findMany({
+    where: {
+      merchantId,
+      isActive: true,
+      OR: [
+        { storeId },
+        { storeId: null }
+      ]
+    },
+    select: {
+      id: true,
+      provider: true,
+      credentials: true
+    }
+  });
+
+  return vaults.find(vault => {
+    const credentials = vault.credentials as Record<string, unknown>;
+    return String(
+      credentials?.processingMode ?? ''
+    ).toUpperCase() === 'ORCHESTRATED';
+  });
+};
+
 export const getApiKeys = async (
   req: AuthRequest,
   res: Response
@@ -155,7 +189,8 @@ export const createApiKey = async (
       select: {
         id: true,
         name: true,
-        storeCode: true
+        storeCode: true,
+        status: true
       }
     });
 
@@ -175,6 +210,65 @@ export const createApiKey = async (
         ? 'live'
         : 'test';
 
+    const scopes = Array.isArray(req.body.scopes)
+      ? req.body.scopes.map(String)
+      : ['payments_write'];
+
+    const wantsWrite = scopes.some(scope =>
+      WRITE_SCOPES.has(scope)
+    );
+
+    if (wantsWrite) {
+      if (store.status !== 'active') {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'STORE_NOT_ACTIVE',
+            message: 'API Keys de pagamento só podem ser criadas para Stores ativas.'
+          }
+        });
+      }
+
+      const orchestratedVault = await getOrchestratedVault(
+        merchantId,
+        store.id
+      );
+
+      if (!orchestratedVault) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'STORE_NOT_ORCHESTRATED',
+            message: 'payments_write só pode ser usado numa Store ORCHESTRATED com Gateway ativo.'
+          }
+        });
+      }
+
+      const credentials = orchestratedVault.credentials as Record<
+        string,
+        unknown
+      >;
+      const vaultEnvironment = String(
+        credentials?.environment ?? ''
+      ).toLowerCase();
+
+      if (
+        vaultEnvironment &&
+        vaultEnvironment !== environment
+      ) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code:
+              environment === 'live'
+                ? 'LIVE_KEY_TEST_GATEWAY_MISMATCH'
+                : 'TEST_KEY_LIVE_GATEWAY_MISMATCH',
+            message: 'O ambiente da API Key deve coincidir com o Gateway ORCHESTRATED da Store.'
+          }
+        });
+      }
+    }
+
     const prefix =
       environment === 'live'
         ? 'xp_live_'
@@ -183,10 +277,6 @@ export const createApiKey = async (
     const fullKey = `${prefix}${crypto
       .randomBytes(24)
       .toString('hex')}`;
-
-    const scopes = Array.isArray(req.body.scopes)
-      ? req.body.scopes.map(String)
-      : ['payments_write'];
 
     const apiKey = await prisma.apiKey.create({
       data: {
