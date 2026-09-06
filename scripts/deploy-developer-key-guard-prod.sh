@@ -23,6 +23,28 @@ DEV_CONTROLLER="src/modules/developer/controllers/developer.controller.ts"
 DIRECT_BEFORE="$(sha256sum "$DIRECT_SRC" | awk '{print $1}')"
 echo "DIRECT_CONTROLLER_SHA_BEFORE=$DIRECT_BEFORE"
 
+wait_for_health() {
+  local output_file="${1:-/tmp/xp-developer-guard-health.json}"
+  rm -f "$output_file"
+
+  for i in $(seq 1 40); do
+    if curl -fsS https://api.xpayments.digital/api/health >"$output_file" 2>/dev/null; then
+      if python3 - "$output_file" <<'PY'
+import json, sys
+x=json.load(open(sys.argv[1]))
+assert x.get('status') == 'ONLINE'
+assert x.get('engine') == 'XPayments'
+PY
+      then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+
+  return 1
+}
+
 git fetch origin feat/checkout-vnext-20260905
 git cat-file -e "$REMOTE_REF:$DEV_CONTROLLER"
 
@@ -36,6 +58,15 @@ rollback() {
     docker cp "$BACKUP/dist/developer.controller.js" "$CONTAINER:/app/dist/modules/developer/controllers/developer.controller.js" || true
   fi
   docker restart "$CONTAINER" >/dev/null || true
+
+  if wait_for_health /tmp/xp-developer-guard-rollback-health.json; then
+    echo "DEVELOPER_GUARD_ROLLBACK_HEALTH=PASS"
+  else
+    echo "DEVELOPER_GUARD_ROLLBACK_HEALTH=FAIL"
+    docker ps --filter "name=$CONTAINER" --format 'CONTAINER={{.Names}} STATUS={{.Status}}' || true
+    docker logs --tail 80 "$CONTAINER" || true
+  fi
+
   echo "DEVELOPER_GUARD_ROLLBACK_COMPLETE=1"
 }
 trap 'echo "DEVELOPER_GUARD_DEPLOY_FAILED=1"; rollback' ERR
@@ -87,10 +118,7 @@ echo "DEVELOPER_GUARD_ARTIFACT_INSTALL=PASS"
 
 docker restart "$CONTAINER" >/dev/null
 
-for i in $(seq 1 20); do
-  if curl -fsS https://api.xpayments.digital/api/health >/tmp/xp-developer-guard-health.json 2>/dev/null; then break; fi
-  sleep 1
-done
+wait_for_health /tmp/xp-developer-guard-health.json
 python3 - <<'PY'
 import json
 x=json.load(open('/tmp/xp-developer-guard-health.json'))
