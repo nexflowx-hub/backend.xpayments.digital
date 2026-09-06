@@ -33,8 +33,8 @@ export const createSession = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, message: 'Acesso negado.' });
     }
 
-    // Converter cêntimos para Euros (ex: 2500 -> 25.00)
-    const amountInEur = Number(amount) / 100;
+    // The public API accepts minor units (for example 2500 = EUR 25.00).
+    const amountInMajorUnits = Number(amount) / 100;
     const sessionId = crypto.randomUUID();
     const checkoutUrl = `https://checkout.xpayments.digital/pay/${sessionId}`;
 
@@ -43,7 +43,7 @@ export const createSession = async (req: Request, res: Response) => {
         id: sessionId,
         merchantId: keyRecord.store.merchantId,
         storeId: keyRecord.store.id,
-        amount: amountInEur,
+        amount: amountInMajorUnits,
         checkoutUrl: checkoutUrl,
         currency,
         reference: reference || `CHK-${Date.now()}`,
@@ -88,14 +88,21 @@ export const loadSession = async (req: Request, res: Response) => {
       provider
     }));
 
+    // `status` is part of the public checkout contract: the checkout app and
+    // merchants use this endpoint for server-authoritative reconciliation.
     return res.status(200).json({
       success: true,
       data: {
         sessionId: session.id,
+        storeId: session.storeId,
         storeName: store?.name || 'Store',
         amount: Number(session.amount),
         currency: session.currency,
         reference: session.reference,
+        status: session.status,
+        metadata: session.metadata || {},
+        expiresAt: session.expiresAt?.toISOString() || null,
+        checkoutUrl: session.checkoutUrl,
         logoUrl: store?.logoUrl || null,
         theme: store?.theme || 'light',
         paymentMethods
@@ -122,7 +129,7 @@ export const initiatePayment = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Sessão inválida.' });
     }
 
-    // Reconverter para cêntimos para o serviço Stripe (que espera cêntimos)
+    // Reconvert to minor units for payment providers such as Stripe.
     const result = await executePayment({
       amount: Number(session.amount) * 100,
       currency: session.currency,
