@@ -180,9 +180,11 @@ const prisma = new PrismaClient();
   }
   if (session.status !== 'succeeded') throw new Error(`INVALID_SESSION_STATUS:${session.status}`);
   const movements = await prisma.$queryRawUnsafe(
-    'SELECT COUNT(*)::int AS count FROM public.wallet_movements WHERE transaction_id = $1::uuid',
+    'SELECT COUNT(*)::int AS count FROM public.wallet_movements WHERE reference = $1',
     process.env.TX_ID
   );
+  const walletMovements = movements?.[0]?.count ?? 0;
+  if (walletMovements < 1) throw new Error(`WALLET_MOVEMENT_MISSING:${walletMovements}`);
   console.log(JSON.stringify({
     transactionId: tx.id,
     amount: Number(tx.amount),
@@ -190,8 +192,9 @@ const prisma = new PrismaClient();
     status: tx.status,
     method: tx.method,
     checkoutStatus: session.status,
-    walletMovements: movements?.[0]?.count ?? 0
+    walletMovements
   }, null, 2));
+  console.log('CHECKOUT_WALLET_MOVEMENT=PASS');
 })().finally(() => prisma.$disconnect());
 NODE
 
