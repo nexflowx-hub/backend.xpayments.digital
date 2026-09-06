@@ -210,11 +210,11 @@ export const createApiKey = async (
         ? 'live'
         : 'test';
 
-    const scopes = Array.isArray(req.body.scopes)
-      ? req.body.scopes.map(String)
+    const scopes: string[] = Array.isArray(req.body.scopes)
+      ? req.body.scopes.map((scope: unknown) => String(scope))
       : ['payments_write'];
 
-    const wantsWrite = scopes.some(scope =>
+    const wantsWrite = scopes.some((scope: string) =>
       WRITE_SCOPES.has(scope)
     );
 
@@ -405,7 +405,7 @@ export const getWebhooks = async (
 
     return res.status(200).json({
       success: true,
-      data: webhooks.map(formatWebhook)
+      data: apiKeys.map(formatApiKey)
     });
   } catch (error) {
     console.error('[WEBHOOKS_LIST_ERROR]', error);
