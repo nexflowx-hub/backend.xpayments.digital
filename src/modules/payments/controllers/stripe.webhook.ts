@@ -242,6 +242,23 @@ export const handleStripeWebhook =
                   }
                 });
 
+              /*
+               * Checkout sessions are the public, provider-neutral status
+               * surface used by the hosted/embedded checkout and merchants.
+               * Keep them aligned with the transaction in the same DB tx.
+               */
+              await tx.checkoutSession.updateMany({
+                where: {
+                  reference: transaction.reference,
+                  status: {
+                    not: 'succeeded'
+                  }
+                },
+                data: {
+                  status: 'succeeded'
+                }
+              });
+
               if (
                 claim.count === 0
               ) {
@@ -324,22 +341,36 @@ export const handleStripeWebhook =
          * tardio de failure/canceled
          * reverta uma transação succeeded.
          */
-        await prisma.transaction.updateMany({
-          where: {
-            id: transactionId,
-            status: {
-              not: 'succeeded'
+        await prisma.$transaction(async tx => {
+          await tx.transaction.updateMany({
+            where: {
+              id: transactionId,
+              status: {
+                not: 'succeeded'
+              }
+            },
+            data: {
+              status:
+                newStatus,
+              providerId:
+                paymentIntent.id,
+              fee: 0,
+              rawResponse:
+                safeResponse
             }
-          },
-          data: {
-            status:
-              newStatus,
-            providerId:
-              paymentIntent.id,
-            fee: 0,
-            rawResponse:
-              safeResponse
-          }
+          });
+
+          await tx.checkoutSession.updateMany({
+            where: {
+              reference: transaction.reference,
+              status: {
+                not: 'succeeded'
+              }
+            },
+            data: {
+              status: newStatus
+            }
+          });
         });
       }
 
