@@ -405,7 +405,7 @@ export const getWebhooks = async (
 
     return res.status(200).json({
       success: true,
-      data: apiKeys.map(formatApiKey)
+      data: webhooks.map(formatWebhook)
     });
   } catch (error) {
     console.error('[WEBHOOKS_LIST_ERROR]', error);
