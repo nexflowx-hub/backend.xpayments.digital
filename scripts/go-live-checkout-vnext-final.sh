@@ -21,6 +21,7 @@ echo "REMOTE_HEAD=$(git rev-parse "$REMOTE_REF")"
 for script in \
   deploy-checkout-vnext-prod.sh \
   deploy-checkout-branding-prod.sh \
+  deploy-developer-key-guard-prod.sh \
   test-checkout-vnext-sandbox.sh
 do
   git show "$REMOTE_REF:scripts/$script" > "/root/$script"
@@ -48,13 +49,23 @@ if [ "$BRANDING_RC" -ne 0 ]; then
 fi
 
 echo
-echo "=== 3. SANDBOX E2E ==="
+echo "=== 3. DEVELOPER API-KEY GUARD ==="
+GUARD_RC=0
+bash /root/deploy-developer-key-guard-prod.sh || GUARD_RC=$?
+echo "DEVELOPER_GUARD_RC=$GUARD_RC"
+if [ "$GUARD_RC" -ne 0 ]; then
+  echo "FINAL_GO_LIVE_ABORTED_AT=DEVELOPER_GUARD"
+  exit "$GUARD_RC"
+fi
+
+echo
+echo "=== 4. SANDBOX E2E ==="
 E2E_RC=0
 bash /root/test-checkout-vnext-sandbox.sh || E2E_RC=$?
 echo "CHECKOUT_E2E_RC=$E2E_RC"
 
 echo
-echo "=== 4. FINAL HEALTH ==="
+echo "=== 5. FINAL HEALTH ==="
 curl -fsS https://api.xpayments.digital/api/health
 echo
 
