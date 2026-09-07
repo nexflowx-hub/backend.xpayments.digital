@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { Response } from 'express';
+import type { Prisma } from '@prisma/client';
 import prisma from '../../../core/prisma';
 import { AuthRequest } from '../../../middleware/auth.middleware';
 
@@ -229,7 +230,7 @@ export const createStore = async (req: AuthRequest, res: Response) => {
     }
 
     const storeCode = await generateStoreCode(name);
-    const config: Record<string, unknown> = {};
+    const config: Prisma.InputJsonObject = {};
     if (primaryColor) config.primaryColor = primaryColor;
     if (successUrl) config.successUrl = successUrl;
 
