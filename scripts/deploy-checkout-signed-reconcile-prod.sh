@@ -12,7 +12,6 @@ DIRECT_SRC="src/modules/payments/controllers/direct.controller.ts"
 ROUTES_SRC="src/modules/payments/routes/payments.routes.ts"
 
 exec > >(tee -a "$REPORT") 2>&1
-
 cd "$APP"
 mkdir -p "$BACKUP"
 
@@ -24,14 +23,15 @@ echo
 echo "=== 0. PRE-FLIGHT ==="
 curl -fsS https://api.xpayments.digital/api/health >/tmp/xp-health-before.json
 cat /tmp/xp-health-before.json
+printf '\n'
 
 grep -q "STRIPE WEBHOOK REJECTED" "$ROUTES_SRC"
 grep -q "verifyStripeWebhookRequest" "$ROUTES_SRC"
-grep -q "internal webhook replay failed" "$CHECKOUT_SRC"
-grep -q "INTERNAL_STRIPE_WEBHOOK_URL" "$CHECKOUT_SRC"
+grep -q "PROVIDER_RECONCILE_MIN_AGE_MS" "$CHECKOUT_SRC"
+grep -q "executeCheckoutOrchestratedPayment" "$CHECKOUT_SRC"
 
 echo "WEBHOOK_SIGNATURE_GUARD_PRESENT=PASS"
-echo "UNSIGNED_REPLAY_PRESENT=PASS"
+echo "CHECKOUT_VNEXT_PRESENT=PASS"
 
 DIRECT_BEFORE="$(sha256sum "$DIRECT_SRC" | awk '{print $1}')"
 ROUTES_BEFORE="$(sha256sum "$ROUTES_SRC" | awk '{print $1}')"
@@ -58,93 +58,20 @@ rollback() {
 trap 'echo "DEPLOY_FAILED=1"; rollback' ERR
 
 echo
-echo "=== 1. PATCH ONLY CHECKOUT RECONCILIATION ==="
-python3 - <<'PY'
-from pathlib import Path
+echo "=== 1. INSTALL VERSIONED SOURCE ==="
+git fetch origin "$REMOTE_BRANCH"
+git show "origin/$REMOTE_BRANCH:$CHECKOUT_SRC" >/tmp/xpayments-checkout-controller.ts
 
-path = Path('src/modules/checkout/controllers/checkout.controller.ts')
-text = path.read_text()
+grep -q "createHmac('sha256', webhookSecret)" /tmp/xpayments-checkout-controller.ts
+grep -q "Stripe-Signature.*signatureTimestamp" /tmp/xpayments-checkout-controller.ts
 
-old_credentials = """    const credentials = vault?.credentials as any;
-    const secretKey = String(credentials?.secretKey || '').trim();
-    if (!secretKey || !vault?.provider?.toLowerCase().startsWith('stripe')) return false;
-"""
+echo "REMOTE_SIGNED_RECONCILER=PASS"
+cp /tmp/xpayments-checkout-controller.ts "$CHECKOUT_SRC"
 
-new_credentials = """    let credentials: any = vault?.credentials;
-    if (typeof credentials === 'string') {
-      try {
-        credentials = JSON.parse(credentials);
-      } catch {
-        credentials = {};
-      }
-    }
-
-    const secretKey = String(credentials?.secretKey || '').trim();
-    const webhookSecret = String(credentials?.webhookSecret || '').trim();
-    if (
-      !secretKey ||
-      !webhookSecret ||
-      !vault?.provider?.toLowerCase().startsWith('stripe')
-    ) return false;
-"""
-
-old_replay = """    const replayResponse = await fetch(INTERNAL_STRIPE_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: `evt_xpayments_checkout_reconcile_${providerId}_${paymentIntent.status}`,
-        object: 'event',
-        type: eventType,
-        data: { object: paymentIntent }
-      })
-    });
-"""
-
-new_replay = """    const eventPayload = JSON.stringify({
-      id: `evt_xpayments_checkout_reconcile_${providerId}_${paymentIntent.status}`,
-      object: 'event',
-      api_version: '2026-06-24.dahlia',
-      created: Math.floor(Date.now() / 1000),
-      livemode: Boolean(paymentIntent?.livemode),
-      pending_webhooks: 0,
-      type: eventType,
-      data: { object: paymentIntent }
-    });
-
-    const signatureTimestamp = Math.floor(Date.now() / 1000);
-    const signature = crypto
-      .createHmac('sha256', webhookSecret)
-      .update(`${signatureTimestamp}.${eventPayload}`, 'utf8')
-      .digest('hex');
-
-    const replayResponse = await fetch(INTERNAL_STRIPE_WEBHOOK_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Stripe-Signature': `t=${signatureTimestamp},v1=${signature}`,
-        'X-XPayments-Internal-Reconcile': 'checkout-vnext'
-      },
-      body: eventPayload
-    });
-"""
-
-if text.count(old_credentials) != 1:
-    raise SystemExit('PATCH_ABORT: credentials block mismatch')
-if text.count(old_replay) != 1:
-    raise SystemExit('PATCH_ABORT: replay block mismatch')
-
-text = text.replace(old_credentials, new_credentials)
-text = text.replace(old_replay, new_replay)
-path.write_text(text)
-PY
-
-grep -q "Stripe-Signature.*signatureTimestamp" "$CHECKOUT_SRC"
-grep -q "createHmac('sha256', webhookSecret)" "$CHECKOUT_SRC"
-
-echo "SIGNED_RECONCILIATION_PATCH=PASS"
+echo "SOURCE_INSTALL=PASS"
 
 echo
-echo "=== 2. TRANSPILE ISOLATED CONTROLLER ==="
+echo "=== 2. ISOLATED TRANSPILE ==="
 docker exec "$CONTAINER" sh -lc '
 set -e
 cd /app
@@ -192,6 +119,7 @@ for i in $(seq 1 30); do
   sleep 1
 done
 cat /tmp/xp-health-after.json
+printf '\n'
 python3 - <<'PY'
 import json
 x=json.load(open('/tmp/xp-health-after.json'))
@@ -216,11 +144,9 @@ echo "WEBHOOK_SIGNATURE_GUARD_STILL_PRESENT=PASS"
 
 echo
 echo "=== 5. SANDBOX E2E ==="
-git fetch origin "$REMOTE_BRANCH"
 git show "origin/$REMOTE_BRANCH:scripts/test-checkout-vnext-sandbox.sh" \
   >/root/test-checkout-vnext-sandbox.sh
 chmod 700 /root/test-checkout-vnext-sandbox.sh
-
 bash /root/test-checkout-vnext-sandbox.sh
 
 echo
@@ -235,5 +161,4 @@ echo "STRIPE_WEBHOOK_ROUTE_FINAL_UNCHANGED=PASS"
 echo "CHECKOUT_SIGNED_RECONCILE_PROD_DEPLOY=PASS"
 echo "BACKUP=$BACKUP"
 echo "REPORT=$REPORT"
-
 trap - ERR
