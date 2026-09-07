@@ -109,9 +109,22 @@ async function reconcilePendingStripeTransaction(transaction: any): Promise<bool
       ? await prisma.gatewayVault.findUnique({ where: { id: transaction.gatewayVaultId } })
       : null;
 
-    const credentials = vault?.credentials as any;
+    let credentials: any = vault?.credentials;
+    if (typeof credentials === 'string') {
+      try {
+        credentials = JSON.parse(credentials);
+      } catch {
+        credentials = {};
+      }
+    }
+
     const secretKey = String(credentials?.secretKey || '').trim();
-    if (!secretKey || !vault?.provider?.toLowerCase().startsWith('stripe')) return false;
+    const webhookSecret = String(credentials?.webhookSecret || '').trim();
+    if (
+      !secretKey ||
+      !webhookSecret ||
+      !vault?.provider?.toLowerCase().startsWith('stripe')
+    ) return false;
 
     const stripeResponse = await fetch(
       `https://api.stripe.com/v1/payment_intents/${encodeURIComponent(providerId)}`,
@@ -131,15 +144,31 @@ async function reconcilePendingStripeTransaction(transaction: any): Promise<bool
     const eventType = providerEventType(paymentIntent);
     if (!eventType) return false;
 
+    const eventPayload = JSON.stringify({
+      id: `evt_xpayments_checkout_reconcile_${providerId}_${paymentIntent.status}`,
+      object: 'event',
+      api_version: '2026-06-24.dahlia',
+      created: Math.floor(Date.now() / 1000),
+      livemode: Boolean(paymentIntent?.livemode),
+      pending_webhooks: 0,
+      type: eventType,
+      data: { object: paymentIntent }
+    });
+
+    const signatureTimestamp = Math.floor(Date.now() / 1000);
+    const signature = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(`${signatureTimestamp}.${eventPayload}`, 'utf8')
+      .digest('hex');
+
     const replayResponse = await fetch(INTERNAL_STRIPE_WEBHOOK_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: `evt_xpayments_checkout_reconcile_${providerId}_${paymentIntent.status}`,
-        object: 'event',
-        type: eventType,
-        data: { object: paymentIntent }
-      })
+      headers: {
+        'Content-Type': 'application/json',
+        'Stripe-Signature': `t=${signatureTimestamp},v1=${signature}`,
+        'X-XPayments-Internal-Reconcile': 'checkout-vnext'
+      },
+      body: eventPayload
     });
 
     if (!replayResponse.ok) {
