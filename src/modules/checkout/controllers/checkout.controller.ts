@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { executePayment } from '../../payments/services/payment.service';
+import { handleStripeWebhook } from '../../payments/controllers/stripe.webhook';
 import { executeCheckoutOrchestratedPayment } from '../services/checkout-orchestrator.service';
 import crypto from 'crypto';
 
@@ -21,9 +22,6 @@ const PAYMENT_LABELS: Record<string, string> = {
 
 const CHECKOUT_METHODS = new Set(Object.keys(PAYMENT_LABELS));
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const INTERNAL_STRIPE_WEBHOOK_URL =
-  process.env.XPAYMENTS_INTERNAL_STRIPE_WEBHOOK_URL ||
-  'http://127.0.0.1:8084/api/v1/payments/webhooks/stripe';
 const providerReconcileAt = new Map<string, number>();
 const PROVIDER_RECONCILE_MIN_AGE_MS = 10_000;
 const PROVIDER_RECONCILE_THROTTLE_MS = 10_000;
@@ -119,12 +117,7 @@ async function reconcilePendingStripeTransaction(transaction: any): Promise<bool
     }
 
     const secretKey = String(credentials?.secretKey || '').trim();
-    const webhookSecret = String(credentials?.webhookSecret || '').trim();
-    if (
-      !secretKey ||
-      !webhookSecret ||
-      !vault?.provider?.toLowerCase().startsWith('stripe')
-    ) return false;
+    if (!secretKey || !vault?.provider?.toLowerCase().startsWith('stripe')) return false;
 
     const stripeResponse = await fetch(
       `https://api.stripe.com/v1/payment_intents/${encodeURIComponent(providerId)}`,
@@ -144,39 +137,112 @@ async function reconcilePendingStripeTransaction(transaction: any): Promise<bool
     const eventType = providerEventType(paymentIntent);
     if (!eventType) return false;
 
-    const eventPayload = JSON.stringify({
+    const metadataTransactionId = String(
+      paymentIntent?.metadata?.nexflowx_transaction_id || ''
+    ).trim();
+    const metadataReference = String(
+      paymentIntent?.metadata?.merchant_reference || ''
+    ).trim();
+    const expectedAmountMinor = Math.round(Number(transaction.amount) * 100);
+    const providerAmountMinor = Number(paymentIntent?.amount);
+    const transactionCurrency = String(transaction.currency || '').toLowerCase();
+    const providerCurrency = String(paymentIntent?.currency || '').toLowerCase();
+    const keyIsLive = secretKey.startsWith('sk_live_') || secretKey.startsWith('rk_live_');
+    const keyIsTest = secretKey.startsWith('sk_test_') || secretKey.startsWith('rk_test_');
+    const providerLivemode = Boolean(paymentIntent?.livemode);
+
+    if (
+      String(paymentIntent?.id || '') !== providerId ||
+      metadataTransactionId !== String(transaction.id) ||
+      metadataReference !== String(transaction.reference) ||
+      providerAmountMinor !== expectedAmountMinor ||
+      providerCurrency !== transactionCurrency ||
+      (keyIsLive && !providerLivemode) ||
+      (keyIsTest && providerLivemode)
+    ) {
+      console.error('[checkout.providerReconcile] provider ownership mismatch', {
+        transactionId: transaction.id,
+        providerId,
+        eventType,
+        paymentIntentMatches: String(paymentIntent?.id || '') === providerId,
+        transactionMetadataMatches: metadataTransactionId === String(transaction.id),
+        referenceMatches: metadataReference === String(transaction.reference),
+        amountMatches: providerAmountMinor === expectedAmountMinor,
+        currencyMatches: providerCurrency === transactionCurrency,
+        modeMatches: !((keyIsLive && !providerLivemode) || (keyIsTest && providerLivemode))
+      });
+      return false;
+    }
+
+    const event = {
       id: `evt_xpayments_checkout_reconcile_${providerId}_${paymentIntent.status}`,
       object: 'event',
       api_version: '2026-06-24.dahlia',
       created: Math.floor(Date.now() / 1000),
-      livemode: Boolean(paymentIntent?.livemode),
+      livemode: providerLivemode,
       pending_webhooks: 0,
       type: eventType,
       data: { object: paymentIntent }
-    });
+    };
 
-    const signatureTimestamp = Math.floor(Date.now() / 1000);
-    const signature = crypto
-      .createHmac('sha256', webhookSecret)
-      .update(`${signatureTimestamp}.${eventPayload}`, 'utf8')
-      .digest('hex');
+    let processorStatus = 200;
+    let processorPayload: any = null;
 
-    const replayResponse = await fetch(INTERNAL_STRIPE_WEBHOOK_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Stripe-Signature': `t=${signatureTimestamp},v1=${signature}`,
-        'X-XPayments-Internal-Reconcile': 'checkout-vnext'
+    const processorReq = {
+      body: event,
+      headers: {},
+      originalUrl: '/internal/checkout/provider-reconcile',
+      verifiedStripeGatewayVaultId: vault.id,
+      verifiedStripeProvider: vault.provider,
+      get: () => undefined
+    } as unknown as Request;
+
+    const processorRes = {
+      status(code: number) {
+        processorStatus = code;
+        return this;
       },
-      body: eventPayload
-    });
+      json(payload: any) {
+        processorPayload = payload;
+        return this;
+      }
+    } as unknown as Response;
 
-    if (!replayResponse.ok) {
-      console.warn('[checkout.providerReconcile] internal webhook replay failed', {
+    await handleStripeWebhook(processorReq, processorRes);
+
+    if (processorStatus < 200 || processorStatus >= 300) {
+      console.warn('[checkout.providerReconcile] internal processor failed', {
         transactionId: transaction.id,
         providerId,
         eventType,
-        status: replayResponse.status
+        status: processorStatus,
+        error: processorPayload?.error || null
+      });
+      return false;
+    }
+
+    const refreshed = await prisma.transaction.findUnique({
+      where: { id: transaction.id },
+      select: { status: true }
+    });
+
+    const refreshedStatus = String(refreshed?.status || '').toLowerCase();
+    const expectedStatus =
+      eventType === 'payment_intent.succeeded'
+        ? 'succeeded'
+        : eventType === 'payment_intent.processing'
+          ? 'processing'
+          : eventType === 'payment_intent.canceled'
+            ? 'canceled'
+            : 'failed';
+
+    if (refreshedStatus !== expectedStatus && !(expectedStatus === 'canceled' && refreshedStatus === 'cancelled')) {
+      console.warn('[checkout.providerReconcile] processor status mismatch', {
+        transactionId: transaction.id,
+        providerId,
+        eventType,
+        expectedStatus,
+        refreshedStatus
       });
       return false;
     }
@@ -185,7 +251,8 @@ async function reconcilePendingStripeTransaction(transaction: any): Promise<bool
     console.log('[checkout.providerReconcile] recovered', {
       transactionId: transaction.id,
       providerId,
-      eventType
+      eventType,
+      transactionStatus: refreshedStatus
     });
     return true;
   } catch (error: any) {
