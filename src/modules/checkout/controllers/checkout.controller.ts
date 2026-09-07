@@ -12,7 +12,13 @@ const PAYMENT_LABELS: Record<string, string> = {
   bizum: 'Bizum',
   pix: 'PIX',
   apple_pay: 'Apple Pay',
-  google_pay: 'Google Pay'
+  google_pay: 'Google Pay',
+  bancontact: 'Bancontact',
+  blik: 'BLIK',
+  ideal: 'iDEAL',
+  eps: 'EPS',
+  klarna: 'Klarna',
+  amazon_pay: 'Amazon Pay'
 };
 
 export const createSession = async (req: Request, res: Response) => {
@@ -33,8 +39,7 @@ export const createSession = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, message: 'Acesso negado.' });
     }
 
-    // The public API accepts minor units (for example 2500 = EUR 25.00).
-    const amountInMajorUnits = Number(amount) / 100;
+    const amountInEur = Number(amount) / 100;
     const sessionId = crypto.randomUUID();
     const checkoutUrl = `https://checkout.xpayments.digital/pay/${sessionId}`;
 
@@ -43,8 +48,8 @@ export const createSession = async (req: Request, res: Response) => {
         id: sessionId,
         merchantId: keyRecord.store.merchantId,
         storeId: keyRecord.store.id,
-        amount: amountInMajorUnits,
-        checkoutUrl: checkoutUrl,
+        amount: amountInEur,
+        checkoutUrl,
         currency,
         reference: reference || `CHK-${Date.now()}`,
         customerEmail,
@@ -58,7 +63,9 @@ export const createSession = async (req: Request, res: Response) => {
       success: true,
       data: {
         sessionId: session.id,
-        checkoutUrl: session.checkoutUrl
+        checkoutUrl: session.checkoutUrl,
+        storeCode: keyRecord.store.storeCode,
+        expiresAt: session.expiresAt.toISOString()
       }
     });
   } catch (error) {
@@ -80,29 +87,40 @@ export const loadSession = async (req: Request, res: Response) => {
     }
 
     const store = (session as any).store;
-    const routingRules = (store?.routingRules as Record<string, string>) || {};
+    const routingRules = (store?.routingRules as Record<string, unknown>) || {};
 
-    const paymentMethods = Object.entries(routingRules).map(([code, provider]) => ({
-      code,
-      label: PAYMENT_LABELS[code] || code,
-      provider
-    }));
+    // routing_rules also carries orchestration/config metadata in some Stores.
+    // Only documented payment-method keys may be exposed as checkout methods.
+    const paymentMethods = Object.keys(PAYMENT_LABELS)
+      .filter(code => typeof routingRules[code] === 'string' && String(routingRules[code]).trim().length > 0)
+      .map(code => ({
+        code,
+        label: PAYMENT_LABELS[code],
+        provider: String(routingRules[code])
+      }));
 
-    // `status` is part of the public checkout contract: the checkout app and
-    // merchants use this endpoint for server-authoritative reconciliation.
+    const config =
+      routingRules._config && typeof routingRules._config === 'object'
+        ? routingRules._config as Record<string, unknown>
+        : {};
+
     return res.status(200).json({
       success: true,
       data: {
         sessionId: session.id,
         storeId: session.storeId,
+        storeCode: store?.storeCode || null,
         storeName: store?.name || 'Store',
         amount: Number(session.amount),
         currency: session.currency,
         reference: session.reference,
         status: session.status,
-        metadata: session.metadata || {},
-        expiresAt: session.expiresAt?.toISOString() || null,
-        checkoutUrl: session.checkoutUrl,
+        customerEmail: session.customerEmail ?? null,
+        metadata: session.metadata ?? {},
+        expiresAt: session.expiresAt?.toISOString?.() ?? session.expiresAt,
+        checkoutUrl: session.checkoutUrl ?? null,
+        returnUrl: typeof config.successUrl === 'string' ? config.successUrl : null,
+        primaryColor: typeof config.primaryColor === 'string' ? config.primaryColor : null,
         logoUrl: store?.logoUrl || null,
         theme: store?.theme || 'light',
         paymentMethods
@@ -129,7 +147,20 @@ export const initiatePayment = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Sessão inválida.' });
     }
 
-    // Reconvert to minor units for payment providers such as Stripe.
+    if (session.expiresAt.getTime() <= Date.now()) {
+      if (session.status !== 'succeeded') {
+        await prisma.checkoutSession.update({
+          where: { id: session.id },
+          data: { status: 'expired' }
+        });
+      }
+      return res.status(410).json({ success: false, message: 'Sessão expirada.' });
+    }
+
+    if (session.status === 'succeeded') {
+      return res.status(409).json({ success: false, message: 'Esta sessão já foi paga.' });
+    }
+
     const result = await executePayment({
       amount: Number(session.amount) * 100,
       currency: session.currency,
@@ -142,6 +173,13 @@ export const initiatePayment = async (req: Request, res: Response) => {
       },
       merchantReference: session.reference || `CHK-${session.id}`
     });
+
+    if (session.status === 'pending') {
+      await prisma.checkoutSession.update({
+        where: { id: session.id },
+        data: { status: 'processing' }
+      });
+    }
 
     return res.status(200).json({
       success: true,
