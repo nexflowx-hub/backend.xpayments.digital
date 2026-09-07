@@ -230,7 +230,7 @@ export const createStore = async (req: AuthRequest, res: Response) => {
     }
 
     const storeCode = await generateStoreCode(name);
-    const config: Prisma.InputJsonObject = {};
+    const config: Record<string, string> = {};
     if (primaryColor) config.primaryColor = primaryColor;
     if (successUrl) config.successUrl = successUrl;
 
@@ -243,7 +243,7 @@ export const createStore = async (req: AuthRequest, res: Response) => {
           domain,
           status: 'draft',
           currency,
-          routingRules: Object.keys(config).length ? { _config: config } : {},
+          routingRules: (Object.keys(config).length ? { _config: config } : {}) as Prisma.InputJsonObject,
           logoUrl,
           theme
         }
