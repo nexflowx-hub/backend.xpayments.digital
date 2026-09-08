@@ -193,7 +193,7 @@ export const register = async (req: Request, res: Response) => {
         }
       });
 
-      const credentials: Record<string, unknown> = {
+      const credentials: any = {
         secretKey: sharedSandbox.secretKey,
         publishableKey: sharedSandbox.publishableKey,
         webhookSecret: sharedSandbox.webhookSecret,
