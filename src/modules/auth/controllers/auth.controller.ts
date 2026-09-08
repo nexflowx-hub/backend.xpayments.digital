@@ -5,9 +5,11 @@ import jwt from 'jsonwebtoken';
 import crypto from 'node:crypto';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_xpayments_digital_2026_master_key';
+const DEFAULT_SHARED_SANDBOX_SOURCE_VAULT_ID = 'c9e9e4b2-bbf1-458a-b643-84fb48a8ffb8';
 interface AuthRequest extends Request { user?: any; }
 
 interface SharedSandboxConfig {
+  sourceVaultId: string;
   secretKey: string;
   publishableKey: string;
   webhookSecret: string;
@@ -16,28 +18,55 @@ interface SharedSandboxConfig {
   webhookUrl: string;
 }
 
-const getSharedSandboxConfig = (): SharedSandboxConfig | null => {
-  const secretKey = String(process.env.XPAYMENTS_SANDBOX_STRIPE_SECRET_KEY || '').trim();
-  const publishableKey = String(process.env.XPAYMENTS_SANDBOX_STRIPE_PUBLISHABLE_KEY || '').trim();
-  const webhookSecret = String(process.env.XPAYMENTS_SANDBOX_STRIPE_WEBHOOK_SECRET || '').trim();
-  const stripeAccountId = String(process.env.XPAYMENTS_SANDBOX_STRIPE_ACCOUNT_ID || '').trim();
-  const webhookEndpointId = String(process.env.XPAYMENTS_SANDBOX_STRIPE_WEBHOOK_ENDPOINT_ID || '').trim() || undefined;
-  const webhookUrl = String(
-    process.env.XPAYMENTS_SANDBOX_STRIPE_WEBHOOK_URL ||
-    'https://api.xpayments.digital/api/v1/payments/webhooks/stripe'
+const getSharedSandboxConfig = async (): Promise<SharedSandboxConfig | null> => {
+  const sourceVaultId = String(
+    process.env.XPAYMENTS_SANDBOX_SOURCE_VAULT_ID || DEFAULT_SHARED_SANDBOX_SOURCE_VAULT_ID
   ).trim();
+
+  if (!sourceVaultId) return null;
+
+  const sourceVault = await prisma.gatewayVault.findFirst({
+    where: {
+      id: sourceVaultId,
+      isActive: true
+    },
+    select: {
+      id: true,
+      provider: true,
+      credentials: true
+    }
+  });
+
+  if (!sourceVault || !sourceVault.provider.startsWith('stripe-')) {
+    return null;
+  }
+
+  const sourceCredentials = (sourceVault.credentials || {}) as Record<string, unknown>;
+  const secretKey = String(sourceCredentials.secretKey || '').trim();
+  const publishableKey = String(sourceCredentials.publishableKey || '').trim();
+  const webhookSecret = String(sourceCredentials.webhookSecret || '').trim();
+  const stripeAccountId = String(sourceCredentials.stripeAccountId || '').trim();
+  const webhookEndpointId = String(sourceCredentials.webhookEndpointId || '').trim() || undefined;
+  const webhookUrl = String(
+    sourceCredentials.webhookUrl || 'https://api.xpayments.digital/api/v1/payments/webhooks/stripe'
+  ).trim();
+  const environment = String(sourceCredentials.environment || '').trim().toLowerCase();
+  const processingMode = String(sourceCredentials.processingMode || '').trim().toUpperCase();
 
   if (
     !secretKey.startsWith('sk_test_') ||
     !publishableKey.startsWith('pk_test_') ||
     !webhookSecret.startsWith('whsec_') ||
     !stripeAccountId.startsWith('acct_') ||
+    environment !== 'test' ||
+    processingMode !== 'ORCHESTRATED' ||
     !/^https:\/\//i.test(webhookUrl)
   ) {
     return null;
   }
 
   return {
+    sourceVaultId: sourceVault.id,
     secretKey,
     publishableKey,
     webhookSecret,
@@ -84,7 +113,12 @@ export const register = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'Faltam dados obrigatórios.' } });
     }
 
-    const sharedSandbox = getSharedSandboxConfig();
+    const existingMerchant = await prisma.merchant.findUnique({ where: { email } });
+    if (existingMerchant) {
+      return res.status(400).json({ success: false, error: { code: 'CONFLICT', message: 'Este email já está registado.' } });
+    }
+
+    const sharedSandbox = await getSharedSandboxConfig();
     if (!sharedSandbox) {
       return res.status(503).json({
         success: false,
@@ -93,11 +127,6 @@ export const register = async (req: Request, res: Response) => {
           message: 'O ambiente Sandbox está temporariamente indisponível para novos registos.'
         }
       });
-    }
-
-    const existingMerchant = await prisma.merchant.findUnique({ where: { email } });
-    if (existingMerchant) {
-      return res.status(400).json({ success: false, error: { code: 'CONFLICT', message: 'Este email já está registado.' } });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -152,13 +181,14 @@ export const register = async (req: Request, res: Response) => {
         stripeAccountId: sharedSandbox.stripeAccountId,
         webhookUrl: sharedSandbox.webhookUrl,
         environment: 'test',
-        credentialMode: 'shared',
-        credentialState: 'active',
+        credentialMode: 'xpayments_managed',
+        credentialState: 'VALIDATED',
         processingMode: 'ORCHESTRATED',
         sourceStore: storeCode,
+        sharedSandboxSourceVaultId: sharedSandbox.sourceVaultId,
         systemWebhook: {
           configured: true,
-          source: 'XPAYMENTS_SHARED_SANDBOX',
+          source: 'XPAYMENTS_ORCHESTRATED_STANDARD_SANDBOX',
           configuredAt: new Date().toISOString()
         }
       };
