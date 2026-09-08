@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/xpay-expert-service-orders-20260908
+      - feat/xpay-expert-payment-instructions-20260908
   pull_request:
     branches:
       - fix/checkout-signed-reconcile-20260907
