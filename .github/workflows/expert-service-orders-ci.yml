@@ -1,0 +1,21 @@
+name: Expert Service Orders CI
+
+on:
+  push:
+    branches:
+      - feat/xpay-expert-service-orders-20260908
+  pull_request:
+    branches:
+      - fix/checkout-signed-reconcile-20260907
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
