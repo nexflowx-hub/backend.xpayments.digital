@@ -18,6 +18,25 @@ interface SharedSandboxConfig {
   webhookUrl: string;
 }
 
+const objectValue = (value: unknown): Record<string, unknown> => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return {};
+    }
+  }
+
+  return {};
+};
+
 const getSharedSandboxConfig = async (): Promise<SharedSandboxConfig | null> => {
   const sourceVaultId = String(
     process.env.XPAYMENTS_SANDBOX_SOURCE_VAULT_ID || DEFAULT_SHARED_SANDBOX_SOURCE_VAULT_ID
@@ -41,7 +60,7 @@ const getSharedSandboxConfig = async (): Promise<SharedSandboxConfig | null> => 
     return null;
   }
 
-  const sourceCredentials = (sourceVault.credentials || {}) as Record<string, unknown>;
+  const sourceCredentials = objectValue(sourceVault.credentials);
   const secretKey = String(sourceCredentials.secretKey || '').trim();
   const publishableKey = String(sourceCredentials.publishableKey || '').trim();
   const webhookSecret = String(sourceCredentials.webhookSecret || '').trim();
