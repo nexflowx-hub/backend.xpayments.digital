@@ -140,12 +140,32 @@ export const register = async (req: Request, res: Response) => {
             card: providerAlias,
             mb_way: providerAlias,
             multibanco: providerAlias,
-            bizum: providerAlias,
-            bancontact: providerAlias,
-            blik: providerAlias
+            bizum: providerAlias
           }
         }
       });
+
+      const credentials: Record<string, unknown> = {
+        secretKey: sharedSandbox.secretKey,
+        publishableKey: sharedSandbox.publishableKey,
+        webhookSecret: sharedSandbox.webhookSecret,
+        stripeAccountId: sharedSandbox.stripeAccountId,
+        webhookUrl: sharedSandbox.webhookUrl,
+        environment: 'test',
+        credentialMode: 'shared',
+        credentialState: 'active',
+        processingMode: 'ORCHESTRATED',
+        sourceStore: storeCode,
+        systemWebhook: {
+          configured: true,
+          source: 'XPAYMENTS_SHARED_SANDBOX',
+          configuredAt: new Date().toISOString()
+        }
+      };
+
+      if (sharedSandbox.webhookEndpointId) {
+        credentials.webhookEndpointId = sharedSandbox.webhookEndpointId;
+      }
 
       const gatewayVault = await tx.gatewayVault.create({
         data: {
@@ -153,24 +173,7 @@ export const register = async (req: Request, res: Response) => {
           storeId: store.id,
           provider: providerAlias,
           isActive: true,
-          credentials: {
-            secretKey: sharedSandbox.secretKey,
-            publishableKey: sharedSandbox.publishableKey,
-            webhookSecret: sharedSandbox.webhookSecret,
-            stripeAccountId: sharedSandbox.stripeAccountId,
-            webhookEndpointId: sharedSandbox.webhookEndpointId,
-            webhookUrl: sharedSandbox.webhookUrl,
-            environment: 'test',
-            credentialMode: 'shared',
-            credentialState: 'active',
-            processingMode: 'ORCHESTRATED',
-            sourceStore: storeCode,
-            systemWebhook: {
-              configured: true,
-              source: 'XPAYMENTS_SHARED_SANDBOX',
-              configuredAt: new Date().toISOString()
-            }
-          }
+          credentials
         }
       });
 
