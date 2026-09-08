@@ -7,6 +7,7 @@ import authRoutes from '../modules/auth/routes/auth.routes';
 import checkoutRoutes from '../modules/checkout/routes/checkout.routes';
 import paymentRoutes from '../modules/payments/routes/payments.routes';
 import aiRoutes from '../modules/ai/routes/ai.routes';
+import expertPublicRoutes from '../modules/expert/routes/expert-public.routes';
 
 import analyticsRoutes from '../modules/analytics/routes/analytics.routes';
 import financeRoutes from '../modules/finance/routes/finance.routes';
@@ -123,6 +124,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/checkout', checkoutRoutes);
 app.use('/api/v1/payments', paymentRoutes);
+app.use('/api/v1/expert', expertPublicRoutes);
 
 /*
 |--------------------------------------------------------------------------

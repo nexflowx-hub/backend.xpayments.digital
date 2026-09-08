@@ -1,4 +1,4 @@
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import crypto from 'node:crypto';
 import prisma from '../../../core/prisma';
 import { AuthRequest } from '../../../middleware/auth.middleware';
@@ -26,6 +26,61 @@ const merchantIdFrom = (req: AuthRequest) =>
 const orderCode = () => {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   return `EXP-${date}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+};
+
+export const listPublicOfferings = async (_req: Request, res: Response) => {
+  try {
+    const rows = await prisma.$queryRaw<any[]>`
+      select
+        off.id,
+        off.code,
+        off.slug,
+        off.name,
+        off.description,
+        off.jurisdiction,
+        off.base_currency,
+        off.prices,
+        off.management_fee_percent,
+        off.lead_time_text,
+        off.availability_limit,
+        off.metadata,
+        coalesce(count(so.id) filter (where so.status <> 'CANCELLED'), 0)::int as committed_count
+      from service_offerings off
+      left join service_orders so on so.offering_id = off.id
+      where off.active = true
+      group by off.id
+      order by off.created_at asc
+    `;
+
+    return res.json({
+      success: true,
+      data: {
+        offerings: rows.map(row => {
+          const limit = row.availability_limit == null ? null : Number(row.availability_limit);
+          const committed = Number(row.committed_count || 0);
+          return {
+            id: row.id,
+            code: row.code,
+            slug: row.slug,
+            name: row.name,
+            description: row.description,
+            jurisdiction: row.jurisdiction,
+            baseCurrency: row.base_currency,
+            prices: row.prices || {},
+            managementFeePercent: Number(row.management_fee_percent || 0),
+            leadTime: row.lead_time_text,
+            availabilityLimit: limit,
+            availabilityRemaining: limit == null ? null : Math.max(0, limit - committed),
+            available: limit == null ? true : committed < limit,
+            metadata: row.metadata || {}
+          };
+        })
+      }
+    });
+  } catch (error: any) {
+    console.error('[expert.offerings.list]', { code: error?.code || null, message: error?.message || 'unknown' });
+    return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Não foi possível carregar o catálogo.' } });
+  }
 };
 
 export const listMerchantOrders = async (req: AuthRequest, res: Response) => {
