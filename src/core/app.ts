@@ -20,6 +20,7 @@ import gatewayRoutes from '../modules/gateway/routes/gateway.routes';
 import commerceRoutes from '../modules/commerce/routes/commerce.routes';
 import developerRoutes from '../modules/developer/routes/developer.routes';
 import adminRoutes from '../modules/admin/routes/admin.routes';
+import expertRoutes from '../modules/expert/routes/expert.routes';
 
 import { authMiddleware } from '../middleware/auth.middleware';
 import { processSettlements } from './jobs/settlement.job';
@@ -154,6 +155,7 @@ api.use('/finance', financeRoutes);
 api.use('/payout-statements', payoutStatementRoutes);
 api.use('/risk', riskRoutes);
 api.use('/treasury', treasuryRoutes);
+api.use('/expert', expertRoutes);
 
 api.use('/', commerceRoutes);
 api.use('/', developerRoutes);
