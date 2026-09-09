@@ -8,6 +8,7 @@ on:
       - feat/expert-ops-v1-20260908
       - feat/control-plane-v1-20260908
       - feat/control-plane-v2-live-ops-20260909
+      - fix/checkout-signed-reconcile-20260907
   pull_request:
     branches:
       - fix/checkout-signed-reconcile-20260907
@@ -23,3 +24,4 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - run: node --check scripts/control-plane-v2-e2e.js
