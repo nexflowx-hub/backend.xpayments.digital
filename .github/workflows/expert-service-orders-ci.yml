@@ -7,6 +7,7 @@ on:
       - feat/xpay-expert-payment-instructions-20260908
       - feat/expert-ops-v1-20260908
       - feat/control-plane-v1-20260908
+      - feat/control-plane-v2-live-ops-20260909
   pull_request:
     branches:
       - fix/checkout-signed-reconcile-20260907
@@ -18,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - run: npm run build
