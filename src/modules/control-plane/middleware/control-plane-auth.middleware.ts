@@ -27,25 +27,31 @@ export interface ControlPlaneRequest extends Request {
 const ROLE_DEFAULT_PERMISSIONS: Record<ControlPlaneRole, string[]> = {
   SUPER_ADMIN: ['*'],
   OPERATIONS: [
-    'overview.read', 'merchants.read', 'stores.read', 'transactions.read',
-    'processing.read', 'payouts.read', 'expert.read', 'audit.read'
+    'overview.read', 'merchants.read', 'merchants.write', 'stores.read', 'stores.write',
+    'transactions.read', 'processing.read', 'processing.write', 'payouts.read',
+    'expert.read', 'expert.write', 'tickets.read', 'tickets.write', 'audit.read'
   ],
   FINANCE: [
     'overview.read', 'merchants.read', 'stores.read', 'transactions.read',
-    'fees.read', 'payouts.read', 'audit.read'
+    'fees.read', 'fees.write', 'tiers.read', 'payouts.read', 'audit.read',
+    'tickets.read'
   ],
   RISK: [
-    'overview.read', 'merchants.read', 'stores.read', 'transactions.read',
-    'processing.read', 'audit.read'
+    'overview.read', 'merchants.read', 'merchants.write', 'stores.read',
+    'transactions.read', 'processing.read', 'audit.read', 'tickets.read'
   ],
   SUPPORT: [
     'overview.read', 'merchants.read', 'stores.read', 'transactions.read',
-    'expert.read'
+    'expert.read', 'tickets.read', 'tickets.write'
   ],
-  EXPERT_OPS: ['overview.read', 'merchants.read', 'expert.read', 'audit.read'],
+  EXPERT_OPS: [
+    'overview.read', 'merchants.read', 'expert.read', 'expert.write',
+    'tickets.read', 'tickets.write', 'audit.read'
+  ],
   READ_ONLY: [
     'overview.read', 'merchants.read', 'stores.read', 'transactions.read',
-    'processing.read', 'fees.read', 'payouts.read', 'expert.read'
+    'processing.read', 'fees.read', 'tiers.read', 'payouts.read', 'expert.read',
+    'tickets.read'
   ]
 };
 
