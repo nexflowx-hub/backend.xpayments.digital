@@ -10,6 +10,7 @@ import aiRoutes from '../modules/ai/routes/ai.routes';
 import expertPublicRoutes from '../modules/expert/routes/expert-public.routes';
 import controlPlanePublicRoutes from '../modules/control-plane/routes/control-plane-public.routes';
 import controlPlaneRoutes from '../modules/control-plane/routes/control-plane.routes';
+import stripeRelayRoutes from '../modules/stripe-relay/routes/stripe-relay.routes';
 
 import analyticsRoutes from '../modules/analytics/routes/analytics.routes';
 import financeRoutes from '../modules/finance/routes/finance.routes';
@@ -41,8 +42,12 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Authorization','Content-Type','x-api-key','Accept']
+  allowedHeaders: ['Authorization','Content-Type','x-api-key','Accept','Idempotency-Key','Stripe-Version','Stripe-Account']
 }));
+
+// Stripe-compatible relay is intentionally mounted before JSON parsing so
+// application/x-www-form-urlencoded request bodies can be forwarded byte-for-byte.
+app.use('/api/stripe/v1', express.raw({ type: 'application/x-www-form-urlencoded', limit: '256kb' }), stripeRelayRoutes);
 
 app.use(express.json({ limit: '256kb' }));
 
