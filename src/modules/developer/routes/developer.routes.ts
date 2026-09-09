@@ -1,12 +1,15 @@
 import { Router } from 'express';
 
 import * as ctrl from '../controllers/developer.controller';
+import { getStoreElementsConfig } from '../controllers/developer-elements.controller';
 
 const router = Router();
 
 router.get('/api-keys', ctrl.getApiKeys);
 router.post('/api-keys', ctrl.createApiKey);
 router.delete('/api-keys/:id', ctrl.deleteApiKey);
+
+router.get('/developer/stores/:storeId/elements-config', getStoreElementsConfig);
 
 router.get('/webhooks', ctrl.getWebhooks);
 router.post('/webhooks', ctrl.createWebhook);
