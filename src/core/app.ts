@@ -8,6 +8,8 @@ import checkoutRoutes from '../modules/checkout/routes/checkout.routes';
 import paymentRoutes from '../modules/payments/routes/payments.routes';
 import aiRoutes from '../modules/ai/routes/ai.routes';
 import expertPublicRoutes from '../modules/expert/routes/expert-public.routes';
+import controlPlanePublicRoutes from '../modules/control-plane/routes/control-plane-public.routes';
+import controlPlaneRoutes from '../modules/control-plane/routes/control-plane.routes';
 
 import analyticsRoutes from '../modules/analytics/routes/analytics.routes';
 import financeRoutes from '../modules/finance/routes/finance.routes';
@@ -70,6 +72,10 @@ app.use('/api/v1/checkout', checkoutRoutes);
 app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/expert', expertPublicRoutes);
 app.use('/api/v1/ai', aiRoutes);
+
+// Dedicated internal identity plane. It deliberately does not inherit Merchant JWT auth.
+app.use('/api/v1/control-plane', controlPlanePublicRoutes);
+app.use('/api/v1/control-plane', controlPlaneRoutes);
 
 const api = express.Router();
 api.use(authMiddleware);
