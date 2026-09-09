@@ -15,6 +15,7 @@ import {
   reviewDocument,
   updateRequirement
 } from '../controllers/expert-ops-intake.controller';
+import { listIntakeQueue } from '../controllers/expert-ops-queue.controller';
 
 const router = Router();
 
@@ -29,6 +30,7 @@ router.get('/orders/:orderId/intake', getOpsIntake);
 router.patch('/orders/:orderId/payment-proofs/:proofId', reviewPaymentProof);
 router.patch('/orders/:orderId/documents/:documentId', reviewDocument);
 router.patch('/orders/:orderId/requirements/:requirementCode', updateRequirement);
+router.get('/intake-queue', listIntakeQueue);
 router.get('/audit', listOpsAudit);
 
 export default router;
