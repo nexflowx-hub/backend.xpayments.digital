@@ -32,9 +32,9 @@ import {
   createProviderAccount, updateProviderAccount, deleteProviderAccount,
   createVault, updateVault, deleteVault,
   createConnection, updateConnection, deleteConnection,
-  upsertProcessingProfile,
   createInternalUser, updateInternalUser, deleteInternalUser
 } from '../controllers/control-plane-write.controller';
+import { upsertProcessingProfileSafe } from '../controllers/control-plane-processing-profile.controller';
 import {
   listSupportTickets, getSupportTicket, createSupportTicket,
   updateSupportTicket, addSupportTicketMessage, deleteSupportTicket
@@ -61,7 +61,7 @@ router.get('/stores', requireControlPlanePermission('stores.read'), listControlP
 router.post('/stores', requireControlPlanePermission('stores.write'), createStore);
 router.patch('/stores/:id', requireControlPlanePermission('stores.write'), updateStore);
 router.delete('/stores/:id', requireControlPlanePermission('stores.write'), deleteStore);
-router.put('/stores/:storeId/processing-profile', requireControlPlanePermission('processing.write'), upsertProcessingProfile);
+router.put('/stores/:storeId/processing-profile', requireControlPlanePermission('processing.write'), upsertProcessingProfileSafe);
 
 router.get('/transactions', requireControlPlanePermission('transactions.read'), listControlPlaneTransactionsSafe);
 
