@@ -122,6 +122,7 @@ docker run --rm \
   -v "$WORK:/hotpatch" \
   "$BASELINE_IMAGE" \
   sh -lc '
+    ln -sfn /app/node_modules /hotpatch/node_modules
     /app/node_modules/.bin/tsc \
       --target ES2020 \
       --module commonjs \
