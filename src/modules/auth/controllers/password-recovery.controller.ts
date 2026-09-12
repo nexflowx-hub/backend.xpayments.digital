@@ -24,8 +24,8 @@ const publicAppUrl = () => {
 };
 
 const buildResetUrl = (token: string) => {
-  const url = new URL('/', publicAppUrl());
-  url.searchParams.set('reset_token', token);
+  const url = new URL('/reset-password', publicAppUrl());
+  url.searchParams.set('token', token);
   return url.toString();
 };
 
