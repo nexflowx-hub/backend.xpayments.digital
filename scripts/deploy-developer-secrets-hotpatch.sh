@@ -138,8 +138,11 @@ SECRET_JS="$WORK/out/modules/developer/controllers/developer-secrets.controller.
 ROUTES_JS="$WORK/out/modules/developer/routes/developer.routes.js"
 test -s "$SECRET_JS"
 test -s "$ROUTES_JS"
-node --check "$SECRET_JS"
-node --check "$ROUTES_JS"
+
+docker run --rm -v "$WORK:/hotpatch" "$BASELINE_IMAGE" \
+  node --check /hotpatch/out/modules/developer/controllers/developer-secrets.controller.js
+docker run --rm -v "$WORK:/hotpatch" "$BASELINE_IMAGE" \
+  node --check /hotpatch/out/modules/developer/routes/developer.routes.js
 
 echo "SECRET_JS_SHA=$(sha256sum "$SECRET_JS" | awk '{print $1}')"
 echo "ROUTES_JS_SHA=$(sha256sum "$ROUTES_JS" | awk '{print $1}')"
