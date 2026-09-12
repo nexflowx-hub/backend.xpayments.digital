@@ -112,7 +112,13 @@ git show "${SOURCE_COMMIT}:src/modules/commerce/routes/commerce.routes.ts" \
   > "$WORK/src/modules/commerce/routes/commerce.routes.ts"
 
 cat > "$WORK/src/core/prisma.d.ts" <<'EOF'
-declare const prisma: any;
+import { Prisma } from '@prisma/client';
+
+interface PrismaHotpatchStub {
+  $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T>;
+}
+
+declare const prisma: PrismaHotpatchStub;
 export default prisma;
 EOF
 
