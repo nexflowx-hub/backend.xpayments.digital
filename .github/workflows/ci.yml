@@ -40,7 +40,7 @@ jobs:
           bash -n scripts/install-customer-sync-v2-shadow-timer.sh
           sudo install -m 0700 scripts/customer-sync-v2-shadow.mjs /root/xpayments-customer-sync-v2-shadow.mjs
           sudo install -m 0700 scripts/run-customer-sync-v2-shadow.sh /root/run-customer-sync-v2-shadow.sh
-          systemd-analyze verify \
+          sudo systemd-analyze verify \
             scripts/systemd/xpayments-customer-sync-v2-shadow.service \
             scripts/systemd/xpayments-customer-sync-v2-shadow.timer
 
