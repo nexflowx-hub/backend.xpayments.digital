@@ -37,6 +37,10 @@ jobs:
         run: |
           node --check scripts/customer-sync-v2-shadow.mjs
           bash -n scripts/run-customer-sync-v2-shadow.sh
+          bash -n scripts/install-customer-sync-v2-shadow-timer.sh
+          systemd-analyze verify \
+            scripts/systemd/xpayments-customer-sync-v2-shadow.service \
+            scripts/systemd/xpayments-customer-sync-v2-shadow.timer
 
       - name: Docker build
         run: docker build -t xpayments-backend:ci .
