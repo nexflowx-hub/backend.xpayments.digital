@@ -58,14 +58,19 @@ outside_hash() {
     "find /app/dist -type f ! -path '$TARGET' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1"
 }
 
+recreate_from_current_image_ref() {
+  cd "$ROOT"
+  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  docker compose up -d --no-build "$COMPOSE_SERVICE"
+}
+
 rollback() {
   local rc="$?"
   if [ "$DEPLOY_STARTED" = "1" ] && [ -n "$SERVICE_IMAGE_REF" ]; then
     echo
     echo "ROLLBACK: restoring ${BASELINE_IMAGE}"
     docker tag "$BASELINE_IMAGE" "$SERVICE_IMAGE_REF" || true
-    cd "$ROOT"
-    docker compose up -d --force-recreate --no-build "$COMPOSE_SERVICE" || true
+    recreate_from_current_image_ref || true
   fi
   docker rm -f "$BUILD_CONTAINER" >/dev/null 2>&1 || true
   exit "$rc"
@@ -159,8 +164,7 @@ echo "CANDIDATE_IMAGE=${CANDIDATE_IMAGE}"
 section "5. Deploy candidate without build"
 DEPLOY_STARTED=1
 docker tag "$CANDIDATE_IMAGE" "$SERVICE_IMAGE_REF"
-cd "$ROOT"
-docker compose up -d --force-recreate --no-build "$COMPOSE_SERVICE"
+recreate_from_current_image_ref
 
 for i in $(seq 1 30); do
   if curl -fsS https://api.xpayments.digital/api/health >/tmp/xpay-pix-health.json 2>/dev/null; then
