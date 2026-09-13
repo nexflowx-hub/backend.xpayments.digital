@@ -2,9 +2,7 @@
 
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient({
-  log: ['error']
-});
+const prisma = new PrismaClient({ log: ['error'] });
 
 const num = value => Number(value ?? 0);
 
@@ -60,16 +58,31 @@ const main = async () => {
     `);
 
     const [statusChanges] = await tx.$queryRawUnsafe(`
+      WITH status_rows AS (
+        SELECT
+          l.customer_id,
+          ss.transaction_id AS sync_transaction_id,
+          LOWER(COALESCE(ss.last_status, '')) AS sync_status,
+          CASE LOWER(COALESCE(t.status, ''))
+            WHEN 'cancelled' THEN 'canceled'
+            ELSE LOWER(COALESCE(t.status, ''))
+          END AS canonical_transaction_status
+        FROM public.customer_transaction_links l
+        JOIN public.transactions t
+          ON t.id = l.transaction_id
+        LEFT JOIN public.customer_transaction_sync_state ss
+          ON ss.transaction_id = l.transaction_id
+      )
       SELECT
-        COUNT(*)::bigint AS status_changes,
-        COUNT(DISTINCT l.customer_id)::bigint AS affected_customers
-      FROM public.customer_transaction_links l
-      JOIN public.transactions t
-        ON t.id = l.transaction_id
-      LEFT JOIN public.customer_transaction_sync_state ss
-        ON ss.transaction_id = l.transaction_id
-      WHERE ss.transaction_id IS NULL
-         OR LOWER(COALESCE(ss.last_status, '')) <> LOWER(COALESCE(t.status, ''))
+        COUNT(*) FILTER (
+          WHERE sync_transaction_id IS NULL
+             OR sync_status <> canonical_transaction_status
+        )::bigint AS status_changes,
+        COUNT(DISTINCT customer_id) FILTER (
+          WHERE sync_transaction_id IS NULL
+             OR sync_status <> canonical_transaction_status
+        )::bigint AS affected_customers
+      FROM status_rows
     `);
 
     const [enrichment] = await tx.$queryRawUnsafe(`
