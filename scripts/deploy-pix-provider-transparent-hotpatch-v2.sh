@@ -55,7 +55,7 @@ resolve_webhook_path() {
 outside_hash() {
   local image="$1"
   docker run --rm "$image" sh -lc \
-    "find /app/dist -type f ! -path '$TARGET' -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print \\$1}'"
+    "find /app/dist -type f ! -path '$TARGET' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1"
 }
 
 rollback() {
