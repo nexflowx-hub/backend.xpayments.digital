@@ -33,5 +33,10 @@ jobs:
       - name: TypeScript build
         run: npm run build
 
+      - name: Operational script syntax
+        run: |
+          node --check scripts/customer-sync-v2-shadow.mjs
+          bash -n scripts/run-customer-sync-v2-shadow.sh
+
       - name: Docker build
         run: docker build -t xpayments-backend:ci .
