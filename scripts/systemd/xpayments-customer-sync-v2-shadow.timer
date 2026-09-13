@@ -1,0 +1,12 @@
+[Unit]
+Description=Run XPayments Customer CRM V2 Shadow Every 5 Minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+RandomizedDelaySec=20s
+Unit=xpayments-customer-sync-v2-shadow.service
+
+[Install]
+WantedBy=timers.target
