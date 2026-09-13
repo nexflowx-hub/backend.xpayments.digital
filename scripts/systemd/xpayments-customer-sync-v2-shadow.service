@@ -1,0 +1,20 @@
+[Unit]
+Description=XPayments Customer CRM V2 Shadow Read-Only Sync
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/root/run-customer-sync-v2-shadow.sh
+TimeoutStartSec=120
+Nice=15
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadOnlyPaths=/root/xpayments-customer-sync-v2-shadow.mjs
+ReadOnlyPaths=/root/run-customer-sync-v2-shadow.sh
