@@ -38,6 +38,7 @@ jobs:
           node --check scripts/customer-sync-v2-shadow.mjs
           bash -n scripts/run-customer-sync-v2-shadow.sh
           bash -n scripts/install-customer-sync-v2-shadow-timer.sh
+          bash -n scripts/deploy-pix-provider-transparent-hotpatch.sh
           sudo install -m 0700 scripts/customer-sync-v2-shadow.mjs /root/xpayments-customer-sync-v2-shadow.mjs
           sudo install -m 0700 scripts/run-customer-sync-v2-shadow.sh /root/run-customer-sync-v2-shadow.sh
           sudo systemd-analyze verify \
