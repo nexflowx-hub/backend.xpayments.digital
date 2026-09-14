@@ -46,10 +46,10 @@ import {
 import {
   listTreasuryWallets,
   listTreasuryReleases,
-  listTreasuryMovements,
-  confirmTreasurySettlement
+  listTreasuryMovements
 } from '../controllers/control-plane-treasury.controller';
 import { listAccountingWallets } from '../controllers/control-plane-accounting-wallets.controller';
+import { confirmTreasurySettlementV2 } from '../controllers/control-plane-treasury-settlement.controller';
 
 const router = Router();
 router.use(controlPlaneAuthMiddleware);
@@ -103,7 +103,7 @@ router.get('/treasury/wallets', requireControlPlanePermission('treasury.read'), 
 router.get('/treasury/accounting-wallets', requireControlPlanePermission('treasury.read'), listAccountingWallets);
 router.get('/treasury/releases', requireControlPlanePermission('treasury.read'), listTreasuryReleases);
 router.get('/treasury/movements', requireControlPlanePermission('treasury.read'), listTreasuryMovements);
-router.post('/treasury/settlements/confirm', requireControlPlanePermission('treasury.write'), confirmTreasurySettlement);
+router.post('/treasury/settlements/confirm', requireControlPlanePermission('treasury.write'), confirmTreasurySettlementV2);
 
 router.get('/expert/orders', requireControlPlanePermission('expert.read'), listControlPlaneExpertOrders);
 router.get('/expert/orders/:id', requireControlPlanePermission('expert.read'), getExpertOrderDetail);
