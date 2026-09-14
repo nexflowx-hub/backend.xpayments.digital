@@ -40,6 +40,7 @@ jobs:
           bash -n scripts/install-customer-sync-v2-shadow-timer.sh
           bash -n scripts/deploy-pix-provider-transparent-hotpatch.sh
           bash -n scripts/deploy-pix-provider-transparent-hotpatch-v2.sh
+          bash -n scripts/deploy-pix-provider-transparent-hotpatch-v3.sh
           sudo install -m 0700 scripts/customer-sync-v2-shadow.mjs /root/xpayments-customer-sync-v2-shadow.mjs
           sudo install -m 0700 scripts/run-customer-sync-v2-shadow.sh /root/run-customer-sync-v2-shadow.sh
           sudo systemd-analyze verify \
