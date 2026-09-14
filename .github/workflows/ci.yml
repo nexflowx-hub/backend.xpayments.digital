@@ -42,6 +42,7 @@ jobs:
           bash -n scripts/deploy-pix-provider-transparent-hotpatch-v2.sh
           bash -n scripts/deploy-pix-provider-transparent-hotpatch-v3.sh
           bash -n scripts/deploy-treasury-finance-readmodel-v1.sh
+          bash -n scripts/deploy-control-plane-treasury-v1.sh
           sudo install -m 0700 scripts/customer-sync-v2-shadow.mjs /root/xpayments-customer-sync-v2-shadow.mjs
           sudo install -m 0700 scripts/run-customer-sync-v2-shadow.sh /root/run-customer-sync-v2-shadow.sh
           sudo systemd-analyze verify \
