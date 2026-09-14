@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../../../core/prisma';
 import { AuthRequest } from '../../../middleware/auth.middleware';
 
@@ -8,12 +9,30 @@ const round = (value: number): number =>
 const dateKey = (date: Date): string =>
   date.toISOString().slice(0, 10);
 
+type PhysicalWalletRow = {
+  id: string;
+  code: string;
+  label: string;
+  currency: string;
+  wallet_role: string;
+  ecosystem: string | null;
+  status: string;
+  balance: unknown;
+  available: unknown;
+  reserved: unknown;
+  metadata: Record<string, unknown> | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
 export const getTreasuryOverview = async (
   req: AuthRequest,
   res: Response
 ) => {
   try {
-    const merchantId = req.user?.id;
+    const merchantId =
+      req.merchantId ||
+      req.user?.id;
 
     if (!merchantId) {
       return res.status(401).json({
@@ -30,7 +49,7 @@ export const getTreasuryOverview = async (
     startDate.setUTCDate(startDate.getUTCDate() - 29);
     startDate.setUTCHours(0, 0, 0, 0);
 
-    const [wallets, movements] = await Promise.all([
+    const [wallets, movements, physicalWalletRows] = await Promise.all([
       prisma.wallet.findMany({
         where: {
           merchantId
@@ -50,9 +69,44 @@ export const getTreasuryOverview = async (
         orderBy: {
           createdAt: 'asc'
         }
-      })
+      }),
+
+      prisma.$queryRaw<PhysicalWalletRow[]>(
+        Prisma.sql`
+          SELECT
+            id,
+            code,
+            label,
+            currency,
+            wallet_role,
+            ecosystem,
+            status,
+            balance,
+            available,
+            reserved,
+            metadata,
+            created_at,
+            updated_at
+          FROM public.treasury_wallets
+          WHERE merchant_id = ${merchantId}::uuid
+          ORDER BY
+            CASE wallet_role
+              WHEN 'BANK_SETTLEMENT' THEN 1
+              WHEN 'CRYPTO_SETTLEMENT' THEN 2
+              WHEN 'BLOCKED' THEN 3
+              ELSE 9
+            END,
+            currency,
+            code
+        `
+      )
     ]);
 
+    /*
+     * Legacy aggregate retained for compatibility only.
+     * It must not be used as a cross-currency financial total because
+     * wallet balances may be denominated in different currencies.
+     */
     const totalLiquidity = wallets.reduce(
       (sum, wallet) => sum + Number(wallet.balance),
       0
@@ -160,9 +214,49 @@ export const getTreasuryOverview = async (
       changePct: 0
     }));
 
+    const physicalWallets = physicalWalletRows.map(wallet => ({
+      id: wallet.id,
+      code: wallet.code,
+      label: wallet.label,
+      currency: wallet.currency,
+      role: wallet.wallet_role,
+      ecosystem: wallet.ecosystem,
+      status: wallet.status,
+      balance: round(Number(wallet.balance)),
+      available: round(Number(wallet.available)),
+      reserved: round(Number(wallet.reserved)),
+      physical: true,
+      manualSettlement:
+        wallet.metadata?.manualSettlement === true,
+      autoFx:
+        wallet.metadata?.autoFx === true,
+      updatedAt:
+        wallet.updated_at instanceof Date
+          ? wallet.updated_at.toISOString()
+          : String(wallet.updated_at)
+    }));
+
+    const accountingByCurrency = wallets.map(wallet => ({
+      currency: wallet.currency,
+      balance: round(Number(wallet.balance)),
+      available: round(Number(wallet.available)),
+      reserved: round(Number(wallet.reserved)),
+      reconciliationHold: round(
+        Number(
+          (wallet as typeof wallet & {
+            reconciliationHold?: unknown;
+          }).reconciliationHold ?? 0
+        )
+      )
+    }));
+
     const liquidityChange = 0;
 
     const data = {
+      /*
+       * Compatibility fields. These legacy totals can span multiple
+       * currencies and must not be treated as a converted financial total.
+       */
       totalLiquidity: round(totalLiquidity),
       reserve: round(reserve),
       pendingPayouts: round(pendingPayouts),
@@ -170,7 +264,14 @@ export const getTreasuryOverview = async (
       liquidityChange,
       cashFlowSeries,
       settlementSeries,
-      balances
+      balances,
+
+      /* Canonical currency-scoped / treasury data. */
+      accountingByCurrency,
+      physicalWallets,
+      financialMetrics: 'currency_scoped',
+      legacyCrossCurrencyTotalsDeprecated: true,
+      generatedAt: new Date().toISOString()
     };
 
     return res.status(200).json({
