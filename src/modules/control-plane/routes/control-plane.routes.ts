@@ -43,6 +43,13 @@ import {
   getExpertOrderDetail, updateExpertOrder, updateExpertStep,
   createExpertAsset, deleteExpertAsset, confirmExpertPayment
 } from '../controllers/control-plane-expert.controller';
+import {
+  listTreasuryWallets,
+  listTreasuryReleases,
+  listTreasuryMovements,
+  confirmTreasurySettlement
+} from '../controllers/control-plane-treasury.controller';
+import { listAccountingWallets } from '../controllers/control-plane-accounting-wallets.controller';
 
 const router = Router();
 router.use(controlPlaneAuthMiddleware);
@@ -91,6 +98,12 @@ router.patch('/tiers/:id', requireControlPlanePermission('fees.write'), updateTi
 router.delete('/tiers/:id', requireControlPlanePermission('fees.write'), deleteTier);
 
 router.get('/payouts', requireControlPlanePermission('payouts.read'), listControlPlanePayoutsSafe);
+
+router.get('/treasury/wallets', requireControlPlanePermission('treasury.read'), listTreasuryWallets);
+router.get('/treasury/accounting-wallets', requireControlPlanePermission('treasury.read'), listAccountingWallets);
+router.get('/treasury/releases', requireControlPlanePermission('treasury.read'), listTreasuryReleases);
+router.get('/treasury/movements', requireControlPlanePermission('treasury.read'), listTreasuryMovements);
+router.post('/treasury/settlements/confirm', requireControlPlanePermission('treasury.write'), confirmTreasurySettlement);
 
 router.get('/expert/orders', requireControlPlanePermission('expert.read'), listControlPlaneExpertOrders);
 router.get('/expert/orders/:id', requireControlPlanePermission('expert.read'), getExpertOrderDetail);
