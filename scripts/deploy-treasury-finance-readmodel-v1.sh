@@ -106,7 +106,9 @@ wait_local_health() {
 
 start_api() {
   cd "$ROOT"
-  docker compose up -d --no-build "$SERVICE"
+  # Keep command-substitution stdout deterministic: Compose lifecycle output
+  # goes to stderr and this function prints only the resolved API CID.
+  docker compose up -d --no-build "$SERVICE" >&2
 
   local cid=""
   for _ in $(seq 1 30); do
