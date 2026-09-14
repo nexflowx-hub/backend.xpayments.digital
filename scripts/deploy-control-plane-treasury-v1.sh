@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ROOT="/root/xpayments-backend-v3"
 SOURCE_BRANCH="feat/control-plane-v2-live-ops-20260909"
-SOURCE_COMMIT="5b090fbc347a614e7806558522f32abc164e42ea"
+SOURCE_COMMIT="84c83348636a3a327eb2bf3209cc2ea65758de73"
 SERVICE="xpayments-api-v3"
 CANONICAL_NAME="xpayments-api-v3"
 
@@ -11,6 +11,7 @@ CP_ROUTES="/app/dist/modules/control-plane/routes/control-plane.routes.js"
 CP_MIDDLEWARE="/app/dist/modules/control-plane/middleware/control-plane-auth.middleware.js"
 CP_TREASURY="/app/dist/modules/control-plane/controllers/control-plane-treasury.controller.js"
 CP_ACCOUNTING="/app/dist/modules/control-plane/controllers/control-plane-accounting-wallets.controller.js"
+CP_SETTLEMENT="/app/dist/modules/control-plane/controllers/control-plane-treasury-settlement.controller.js"
 CP_PUBLIC_ROUTES="/app/dist/modules/control-plane/routes/control-plane-public.routes.js"
 APP_PATH="/app/dist/core/app.js"
 
@@ -128,6 +129,7 @@ outside_hash() {
       ! -path '$CP_MIDDLEWARE' \
       ! -path '$CP_TREASURY' \
       ! -path '$CP_ACCOUNTING' \
+      ! -path '$CP_SETTLEMENT' \
       -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1"
 }
 
@@ -213,8 +215,9 @@ CP_ROUTES_JS="$SOURCE_DIR/dist-hotpatch/modules/control-plane/routes/control-pla
 CP_MIDDLEWARE_JS="$SOURCE_DIR/dist-hotpatch/modules/control-plane/middleware/control-plane-auth.middleware.js"
 CP_TREASURY_JS="$SOURCE_DIR/dist-hotpatch/modules/control-plane/controllers/control-plane-treasury.controller.js"
 CP_ACCOUNTING_JS="$SOURCE_DIR/dist-hotpatch/modules/control-plane/controllers/control-plane-accounting-wallets.controller.js"
+CP_SETTLEMENT_JS="$SOURCE_DIR/dist-hotpatch/modules/control-plane/controllers/control-plane-treasury-settlement.controller.js"
 
-for f in "$CP_ROUTES_JS" "$CP_MIDDLEWARE_JS" "$CP_TREASURY_JS" "$CP_ACCOUNTING_JS"; do
+for f in "$CP_ROUTES_JS" "$CP_MIDDLEWARE_JS" "$CP_TREASURY_JS" "$CP_ACCOUNTING_JS" "$CP_SETTLEMENT_JS"; do
   test -f "$f"
   node --check "$f"
 done
@@ -228,11 +231,13 @@ docker cp "$CP_ROUTES_JS" "$CANDIDATE_CONTAINER:$CP_ROUTES"
 docker cp "$CP_MIDDLEWARE_JS" "$CANDIDATE_CONTAINER:$CP_MIDDLEWARE"
 docker cp "$CP_TREASURY_JS" "$CANDIDATE_CONTAINER:$CP_TREASURY"
 docker cp "$CP_ACCOUNTING_JS" "$CANDIDATE_CONTAINER:$CP_ACCOUNTING"
+docker cp "$CP_SETTLEMENT_JS" "$CANDIDATE_CONTAINER:$CP_SETTLEMENT"
 
 CP_ROUTES_SHA="$(sha256sum "$CP_ROUTES_JS" | cut -d' ' -f1)"
 CP_MIDDLEWARE_SHA="$(sha256sum "$CP_MIDDLEWARE_JS" | cut -d' ' -f1)"
 CP_TREASURY_SHA="$(sha256sum "$CP_TREASURY_JS" | cut -d' ' -f1)"
 CP_ACCOUNTING_SHA="$(sha256sum "$CP_ACCOUNTING_JS" | cut -d' ' -f1)"
+CP_SETTLEMENT_SHA="$(sha256sum "$CP_SETTLEMENT_JS" | cut -d' ' -f1)"
 
 docker commit "$CANDIDATE_CONTAINER" "$CANDIDATE_IMAGE" >/dev/null
 
@@ -241,6 +246,7 @@ echo "CP_ROUTES_SHA=${CP_ROUTES_SHA}"
 echo "CP_MIDDLEWARE_SHA=${CP_MIDDLEWARE_SHA}"
 echo "CP_TREASURY_SHA=${CP_TREASURY_SHA}"
 echo "CP_ACCOUNTING_SHA=${CP_ACCOUNTING_SHA}"
+echo "CP_SETTLEMENT_SHA=${CP_SETTLEMENT_SHA}"
 
 section "6. Candidate isolation"
 BASELINE_OUTSIDE_HASH="$(outside_hash "$BASELINE_IMAGE")"
@@ -272,6 +278,7 @@ test "$(sha_in "$NEW_CID" "$CP_ROUTES")" = "$CP_ROUTES_SHA"
 test "$(sha_in "$NEW_CID" "$CP_MIDDLEWARE")" = "$CP_MIDDLEWARE_SHA"
 test "$(sha_in "$NEW_CID" "$CP_TREASURY")" = "$CP_TREASURY_SHA"
 test "$(sha_in "$NEW_CID" "$CP_ACCOUNTING")" = "$CP_ACCOUNTING_SHA"
+test "$(sha_in "$NEW_CID" "$CP_SETTLEMENT")" = "$CP_SETTLEMENT_SHA"
 
 echo "PAYMENT_RUNTIME_UNCHANGED=PASS"
 echo "CONTROL_PLANE_TREASURY_RUNTIME=PASS"
@@ -291,6 +298,7 @@ DEPLOY_STARTED=0
 trap - ERR
 
 echo "CONTROL_PLANE_TREASURY=LIVE"
+echo "TREASURY_SETTLEMENT_V2=LIVE"
 echo "TREASURY_WRITE_REQUIRES_RBAC=YES"
 echo "PAYMENT_CREATED=NO"
 echo "SETTLEMENT_EXECUTED=NO"
