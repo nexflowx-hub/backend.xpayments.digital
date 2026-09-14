@@ -1,0 +1,24 @@
+name: Control Plane CI
+
+on:
+  push:
+    branches:
+      - feat/control-plane-treasury-settlements-20260914
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+          DIRECT_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+      - run: npm run build
