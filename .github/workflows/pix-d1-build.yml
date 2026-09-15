@@ -26,4 +26,6 @@ jobs:
       - name: TypeScript build
         run: npm run build
       - name: Deployment script syntax
-        run: bash -n scripts/deploy-pix-d1-mypets-prod.sh
+        run: |
+          bash -n scripts/deploy-pix-d1-mypets-prod.sh
+          bash -n scripts/deploy-pix-d1-mypets-runtime-v2.sh
