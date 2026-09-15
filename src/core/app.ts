@@ -29,46 +29,34 @@ const app = express();
 const PORT = 8084;
 
 app.set('trust proxy', 1);
-
 app.use(helmet());
 
 app.use(cors({
   origin(origin, callback) {
     callback(null, true);
   },
-
   credentials: true,
-
-  methods: [
-    'GET',
-    'POST',
-    'PUT',
-    'PATCH',
-    'DELETE',
-    'OPTIONS'
-  ],
-
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
     'Authorization',
     'Content-Type',
     'x-api-key',
     'Accept',
-    'Stripe-Signature'
+    'Stripe-Signature',
+    'X-Webhook-Event',
+    'X-Webhook-Timestamp',
+    'X-Webhook-Signature'
   ]
 }));
 
 app.use(express.json({
   limit: '256kb',
-
   verify(req, _res, buffer) {
-    const requestUrl = String(
-      req.url || ''
-    );
+    const requestUrl = String(req.url || '');
 
     if (
-      requestUrl.startsWith(
-        '/api/v1/payments/webhooks/stripe'
-      )
+      requestUrl.startsWith('/api/v1/payments/webhooks/stripe') ||
+      requestUrl.startsWith('/api/v1/payments/webhooks/pix-d1')
     ) {
       (req as any).rawBody = Buffer.from(buffer);
     }
@@ -76,57 +64,29 @@ app.use(express.json({
 }));
 
 app.use((req, res, next) => {
-  console.log(
-    `[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`
-  );
-
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
   next();
 });
 
-/*
-|--------------------------------------------------------------------------
-| CRON JOBS
-|--------------------------------------------------------------------------
-*/
-
-const settlementCronEnabled =
-  String(
-    process.env.XPAYMENTS_SETTLEMENT_CRON_ENABLED ??
-    'false'
-  )
-    .trim()
-    .toLowerCase() === 'true';
+const settlementCronEnabled = String(
+  process.env.XPAYMENTS_SETTLEMENT_CRON_ENABLED ?? 'false'
+)
+  .trim()
+  .toLowerCase() === 'true';
 
 if (settlementCronEnabled) {
   cron.schedule('0 0 * * *', () => {
-    console.log(
-      '⏰ [CRON] Iniciando agendamento diário de liquidação...'
-    );
-
+    console.log('⏰ [CRON] Iniciando agendamento diário de liquidação...');
     processSettlements().catch(error =>
-      console.error(
-        '❌ [CRON] Falha na liquidação:',
-        error
-      )
+      console.error('❌ [CRON] Falha na liquidação:', error)
     );
   });
-
-  console.log(
-    '✅ [CRON] Serviço de liquidação automática (D+3) iniciado.'
-  );
+  console.log('✅ [CRON] Serviço de liquidação automática (D+3) iniciado.');
 } else {
-  console.log(
-    '⏸️ [CRON] Liquidação automática D+3 desativada. Liberações em modo manual.'
-  );
+  console.log('⏸️ [CRON] Liquidação automática D+3 desativada. Liberações em modo manual.');
 }
 
-/*
-|--------------------------------------------------------------------------
-| PUBLIC API
-|--------------------------------------------------------------------------
-*/
-
-app.get('/api/health', (req, res) => {
+app.get('/api/health', (_req, res) => {
   res.json({
     success: true,
     version: '3.1.0',
@@ -138,27 +98,9 @@ app.get('/api/health', (req, res) => {
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/checkout', checkoutRoutes);
 app.use('/api/v1/payments', paymentRoutes);
-
-/*
-|--------------------------------------------------------------------------
-| XPIA PUBLIC API
-|--------------------------------------------------------------------------
-|
-| O endpoint é público para permitir utilização na landing page /support.
-| Possui validação, limites de payload e rate limit interno.
-|
-*/
-
 app.use('/api/v1/ai', aiRoutes);
 
-/*
-|--------------------------------------------------------------------------
-| PRIVATE API
-|--------------------------------------------------------------------------
-*/
-
 const api = express.Router();
-
 api.use(authMiddleware);
 
 api.use('/merchant', merchantRoutes);
@@ -171,7 +113,6 @@ api.use('/payout-statements', payoutStatementRoutes);
 api.use('/payout-requests', payoutRequestRoutes);
 api.use('/risk', riskRoutes);
 api.use('/treasury', treasuryRoutes);
-
 api.use('/', commerceRoutes);
 api.use('/', developerRoutes);
 api.use('/', adminRoutes);
@@ -179,7 +120,5 @@ api.use('/', adminRoutes);
 app.use('/api/v1', api);
 
 app.listen(PORT, () => {
-  console.log(
-    `🚀 XPayments V3.1 listening on ${PORT}`
-  );
+  console.log(`🚀 XPayments V3.1 listening on ${PORT}`);
 });
