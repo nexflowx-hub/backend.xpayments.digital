@@ -50,7 +50,7 @@ const verifySignature = (
 
 const mergeRawResponse = (
   current: unknown,
-  settlement: Record<string, unknown>
+  settlement: Record<string, any>
 ) => ({
   ...asRecord(current),
   settlement
