@@ -25,3 +25,5 @@ jobs:
         run: npx prisma generate
       - name: TypeScript build
         run: npm run build
+      - name: Deployment script syntax
+        run: bash -n scripts/deploy-pix-d1-mypets-prod.sh
