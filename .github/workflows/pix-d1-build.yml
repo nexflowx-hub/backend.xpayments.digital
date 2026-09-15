@@ -1,0 +1,27 @@
+name: PIX D1 Build
+
+on:
+  push:
+    branches:
+      - feat/pix-d1-mypets-20260915
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: TypeScript build
+        run: npm run build
