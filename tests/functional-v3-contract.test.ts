@@ -23,9 +23,11 @@ test('wallet operation shape prevents ambiguous source and destination semantics
   assert.match(migration, /source_treasury_wallet_id <> destination_treasury_wallet_id/);
 });
 
-test('routing decisions are sticky and merchant scoped', () => {
+test('routing decisions are sticky, merchant scoped and shadow-first', () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS public\.routing_decisions/);
   assert.match(migration, /routing_decisions_idempotency_uq UNIQUE \(merchant_id, idempotency_key\)/);
+  assert.match(migration, /activation_mode text NOT NULL DEFAULT 'shadow'/);
+  assert.match(migration, /CHECK \(activation_mode IN \('shadow','enforce'\)\)/);
 });
 
 test('new financial control-plane tables are not exposed through Supabase client roles', () => {
