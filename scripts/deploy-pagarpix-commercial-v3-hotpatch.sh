@@ -120,7 +120,6 @@ echo "FEATURE_HEAD=${FEATURE_HEAD}"
 docker build -t "$FEATURE_IMAGE" "$FEATURE_SRC" >/dev/null
 docker run --rm --entrypoint sh "$FEATURE_IMAGE" -lc "
   test -f '$AUTH_CONTROLLER_PATH' &&
-  test -f '$AUTH_ROUTES_PATH' &&
   test -f '$PIX_ROUTER_PATH' &&
   test -f '$PIX_ROUTING_V3_PATH'
 "
@@ -128,7 +127,6 @@ docker create --name "$FEATURE_CONTAINER" "$FEATURE_IMAGE" >/dev/null
 
 for target in \
   "$AUTH_CONTROLLER_PATH" \
-  "$AUTH_ROUTES_PATH" \
   "$PIX_ROUTER_PATH" \
   "$PIX_ROUTING_V3_PATH"; do
   rel="${target#/app/}"
@@ -143,7 +141,6 @@ docker create --name "$CANDIDATE_CONTAINER" "$BASELINE_IMAGE" >/dev/null
 
 for target in \
   "$AUTH_CONTROLLER_PATH" \
-  "$AUTH_ROUTES_PATH" \
   "$PIX_ROUTER_PATH" \
   "$PIX_ROUTING_V3_PATH"; do
   rel="${target#/app/}"
@@ -151,6 +148,27 @@ for target in \
   docker cp "$EXTRACT/$rel" "$CANDIDATE_CONTAINER:$target"
 done
 
+LIVE_AUTH_ROUTES_HOST="$EXTRACT/live-auth.routes.js"
+docker cp "$CANDIDATE_CONTAINER:$AUTH_ROUTES_PATH" "$LIVE_AUTH_ROUTES_HOST"
+python3 - "$LIVE_AUTH_ROUTES_HOST" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+if "pagarpix/register" not in text:
+    marker = "router.post('/register', ctrl.register);"
+    if text.count(marker) != 1:
+        raise SystemExit('AUTH_ROUTE_PATCH_MARKER_NOT_UNIQUE')
+    text = text.replace(
+        marker,
+        marker + "\nrouter.post('/pagarpix/register', ctrl.registerPagarPix);",
+        1,
+    )
+path.write_text(text)
+PY
+
+docker cp "$LIVE_AUTH_ROUTES_HOST" "$CANDIDATE_CONTAINER:$AUTH_ROUTES_PATH"
 docker commit "$CANDIDATE_CONTAINER" "$CANDIDATE_IMAGE" >/dev/null
 
 section "5. Candidate syntax and contract validation"
@@ -170,6 +188,13 @@ docker run --rm --entrypoint sh "$CANDIDATE_IMAGE" -lc "
   grep -q '/api/stripe/v1' '$APP_PATH' &&
   grep -q 'webhooks/misticpay' '$PAYMENTS_ROUTES_PATH'
 "
+
+if docker run --rm --entrypoint sh "$BASELINE_IMAGE" -lc "grep -q \"'/forgot'\" '$AUTH_ROUTES_PATH'"; then
+  docker run --rm --entrypoint sh "$CANDIDATE_IMAGE" -lc "grep -q \"'/forgot'\" '$AUTH_ROUTES_PATH' && grep -q \"'/reset'\" '$AUTH_ROUTES_PATH'"
+  echo "PASSWORD_RECOVERY_ROUTES=PRESERVED"
+else
+  echo "PASSWORD_RECOVERY_ROUTES=NOT_PRESENT_IN_BASELINE"
+fi
 
 echo "CANDIDATE_VALIDATION=PASS"
 
