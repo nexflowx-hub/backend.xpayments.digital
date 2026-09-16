@@ -5,6 +5,7 @@ import { authMiddleware } from '../../../middleware/auth.middleware';
 const router = Router();
 router.post('/login', ctrl.login);
 router.post('/register', ctrl.register);
+router.post('/pagarpix/register', ctrl.registerPagarPix);
 router.post('/logout', ctrl.logout);
 router.get('/me', authMiddleware, ctrl.me);
 
