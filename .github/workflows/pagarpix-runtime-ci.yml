@@ -35,12 +35,12 @@ jobs:
 
       - name: Validate PagarPIX runtime artifacts
         run: |
-          test -f dist/modules/auth/controllers/auth.controller.js
+          test -f dist/modules/auth/controllers/pagarpix-onboarding.controller.js
           test -f dist/modules/auth/routes/auth.routes.js
           test -f dist/modules/payments/services/pix-router.service.js
           test -f dist/modules/payments/services/pix-routing-v3.service.js
           grep -q "pagarpix/register" dist/modules/auth/routes/auth.routes.js
-          grep -q "PagarPIX Conta BRL" dist/modules/auth/controllers/auth.controller.js
+          grep -q "PagarPIX Conta BRL" dist/modules/auth/controllers/pagarpix-onboarding.controller.js
           grep -q "resolvePixRoutingV3" dist/modules/payments/services/pix-router.service.js
 
       - name: Deployment script syntax
