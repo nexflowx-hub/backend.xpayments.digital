@@ -29,3 +29,4 @@ jobs:
         run: |
           bash -n scripts/deploy-pix-d1-mypets-prod.sh
           bash -n scripts/deploy-pix-d1-mypets-runtime-v2.sh
+          bash -n scripts/deploy-pix-d1-runtime-v3.sh
