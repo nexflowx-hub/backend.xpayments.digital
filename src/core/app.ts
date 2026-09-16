@@ -14,6 +14,7 @@ import payoutStatementRoutes from '../modules/payout-statements/routes/payout-st
 import walletRoutes from '../modules/wallet/routes/wallet.routes';
 import transactionRoutes from '../modules/transactions/routes/transactions.routes';
 import treasuryRoutes from '../modules/treasury/routes/treasury.routes';
+import routingRoutes from '../modules/routing/routes/routing.routes';
 import riskRoutes from '../modules/risk/routes/risk.routes';
 import merchantRoutes from '../modules/merchant/routes/merchant.routes';
 import gatewayRoutes from '../modules/gateway/routes/gateway.routes';
@@ -51,6 +52,7 @@ app.use(cors({
     'Authorization',
     'Content-Type',
     'x-api-key',
+    'Idempotency-Key',
     'Accept'
   ]
 }));
@@ -154,6 +156,7 @@ api.use('/finance', financeRoutes);
 api.use('/payout-statements', payoutStatementRoutes);
 api.use('/risk', riskRoutes);
 api.use('/treasury', treasuryRoutes);
+api.use('/routing', routingRoutes);
 
 api.use('/', commerceRoutes);
 api.use('/', developerRoutes);
