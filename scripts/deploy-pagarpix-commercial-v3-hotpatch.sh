@@ -17,6 +17,7 @@ CANDIDATE_CONTAINER="xpayments-pagarpix-candidate-${STAMP}"
 
 AUTH_CONTROLLER_PATH="/app/dist/modules/auth/controllers/auth.controller.js"
 AUTH_ROUTES_PATH="/app/dist/modules/auth/routes/auth.routes.js"
+PIX_CONTROLLER_PATH="/app/dist/modules/payments/controllers/pix.controller.js"
 PIX_ROUTER_PATH="/app/dist/modules/payments/services/pix-router.service.js"
 PIX_ROUTING_V3_PATH="/app/dist/modules/payments/services/pix-routing-v3.service.js"
 APP_PATH="/app/dist/core/app.js"
@@ -24,6 +25,7 @@ PAYMENTS_ROUTES_PATH="/app/dist/modules/payments/routes/payments.routes.js"
 
 DEPLOY_STARTED=0
 SERVICE_IMAGE_REF=""
+PIX_CONTROLLER_USES_ROUTER=0
 
 section() {
   echo
@@ -84,6 +86,7 @@ echo
 for target in \
   "$AUTH_CONTROLLER_PATH" \
   "$AUTH_ROUTES_PATH" \
+  "$PIX_CONTROLLER_PATH" \
   "$PIX_ROUTER_PATH" \
   "$APP_PATH" \
   "$PAYMENTS_ROUTES_PATH"; do
@@ -93,6 +96,14 @@ done
 
 docker exec "$SERVICE" grep -q "/api/stripe/v1" "$APP_PATH"
 docker exec "$SERVICE" grep -q "webhooks/misticpay" "$PAYMENTS_ROUTES_PATH"
+
+if docker exec "$SERVICE" grep -Eq "pix-router\.service|executeRoutedPixPayment" "$PIX_CONTROLLER_PATH"; then
+  PIX_CONTROLLER_USES_ROUTER=1
+  echo "PIX_CONTROLLER_USES_ROUTER=YES"
+else
+  echo "PIX_CONTROLLER_USES_ROUTER=NO"
+  echo "NOTE: onboarding will be deployed; Routing V3 observer will remain dormant until the live PIX controller is reconciled."
+fi
 
 echo "PRODUCTION_PREFLIGHT=PASS"
 
@@ -197,6 +208,11 @@ echo "FEATURE_HEAD=${FEATURE_HEAD}"
 echo "BASELINE_IMAGE=${BASELINE_IMAGE}"
 echo "CANDIDATE_IMAGE=${CANDIDATE_IMAGE}"
 echo "ROLLBACK_IMAGE=${BASELINE_IMAGE}"
+if [ "$PIX_CONTROLLER_USES_ROUTER" = "1" ]; then
+  echo "ROUTING_V3_SHADOW_OBSERVER=ACTIVE_PATH"
+else
+  echo "ROUTING_V3_SHADOW_OBSERVER=DORMANT_CONTROLLER_RECONCILIATION_REQUIRED"
+fi
 
 echo
 echo "NOTE: Routing V3 remains observer-only; real provider selection is still Store.routingRules.pix."
