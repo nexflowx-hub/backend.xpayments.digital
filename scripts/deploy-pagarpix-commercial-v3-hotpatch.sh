@@ -118,6 +118,12 @@ FEATURE_HEAD="$(git -C "$FEATURE_SRC" rev-parse HEAD)"
 echo "FEATURE_HEAD=${FEATURE_HEAD}"
 
 docker build -t "$FEATURE_IMAGE" "$FEATURE_SRC" >/dev/null
+docker run --rm --entrypoint sh "$FEATURE_IMAGE" -lc "
+  test -f '$AUTH_CONTROLLER_PATH' &&
+  test -f '$AUTH_ROUTES_PATH' &&
+  test -f '$PIX_ROUTER_PATH' &&
+  test -f '$PIX_ROUTING_V3_PATH'
+"
 docker create --name "$FEATURE_CONTAINER" "$FEATURE_IMAGE" >/dev/null
 
 for target in \
@@ -125,7 +131,6 @@ for target in \
   "$AUTH_ROUTES_PATH" \
   "$PIX_ROUTER_PATH" \
   "$PIX_ROUTING_V3_PATH"; do
-  docker exec "$FEATURE_CONTAINER" test -f "$target"
   rel="${target#/app/}"
   mkdir -p "$EXTRACT/$(dirname "$rel")"
   docker cp "$FEATURE_CONTAINER:$target" "$EXTRACT/$rel"
@@ -146,18 +151,16 @@ for target in \
   docker cp "$EXTRACT/$rel" "$CANDIDATE_CONTAINER:$target"
 done
 
+docker commit "$CANDIDATE_CONTAINER" "$CANDIDATE_IMAGE" >/dev/null
+
 section "5. Candidate syntax and contract validation"
-docker start "$CANDIDATE_CONTAINER" >/dev/null 2>&1 || true
 for target in \
   "$AUTH_CONTROLLER_PATH" \
   "$AUTH_ROUTES_PATH" \
   "$PIX_ROUTER_PATH" \
   "$PIX_ROUTING_V3_PATH"; do
-  docker exec "$CANDIDATE_CONTAINER" node --check "$target" >/dev/null
+  docker run --rm --entrypoint node "$CANDIDATE_IMAGE" --check "$target" >/dev/null
 done
-docker stop "$CANDIDATE_CONTAINER" >/dev/null 2>&1 || true
-
-docker commit "$CANDIDATE_CONTAINER" "$CANDIDATE_IMAGE" >/dev/null
 
 docker run --rm --entrypoint sh "$CANDIDATE_IMAGE" -lc "
   grep -q 'pagarpix/register' '$AUTH_ROUTES_PATH' &&
