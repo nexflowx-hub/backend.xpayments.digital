@@ -16,6 +16,7 @@ FEATURE_CONTAINER="xpayments-pagarpix-feature-${STAMP}"
 CANDIDATE_CONTAINER="xpayments-pagarpix-candidate-${STAMP}"
 
 AUTH_CONTROLLER_PATH="/app/dist/modules/auth/controllers/auth.controller.js"
+PAGARPIX_CONTROLLER_PATH="/app/dist/modules/auth/controllers/pagarpix-onboarding.controller.js"
 AUTH_ROUTES_PATH="/app/dist/modules/auth/routes/auth.routes.js"
 PIX_CONTROLLER_PATH="/app/dist/modules/payments/controllers/pix.controller.js"
 PIX_ROUTER_PATH="/app/dist/modules/payments/services/pix-router.service.js"
@@ -26,6 +27,10 @@ PAYMENTS_ROUTES_PATH="/app/dist/modules/payments/routes/payments.routes.js"
 DEPLOY_STARTED=0
 SERVICE_IMAGE_REF=""
 PIX_CONTROLLER_USES_ROUTER=0
+AUTH_CONTROLLER_SHA=""
+PIX_CONTROLLER_SHA=""
+APP_SHA=""
+PAYMENTS_ROUTES_SHA=""
 
 section() {
   echo
@@ -52,6 +57,12 @@ wait_health() {
     sleep 1
   done
   return 1
+}
+
+image_sha() {
+  local image="$1"
+  local path="$2"
+  docker run --rm --entrypoint sha256sum "$image" "$path" | awk '{print $1}'
 }
 
 rollback() {
@@ -91,8 +102,13 @@ for target in \
   "$APP_PATH" \
   "$PAYMENTS_ROUTES_PATH"; do
   docker exec "$SERVICE" test -f "$target"
-  echo "$(docker exec "$SERVICE" sha256sum "$target")"
+  docker exec "$SERVICE" sha256sum "$target"
 done
+
+AUTH_CONTROLLER_SHA="$(docker exec "$SERVICE" sha256sum "$AUTH_CONTROLLER_PATH" | awk '{print $1}')"
+PIX_CONTROLLER_SHA="$(docker exec "$SERVICE" sha256sum "$PIX_CONTROLLER_PATH" | awk '{print $1}')"
+APP_SHA="$(docker exec "$SERVICE" sha256sum "$APP_PATH" | awk '{print $1}')"
+PAYMENTS_ROUTES_SHA="$(docker exec "$SERVICE" sha256sum "$PAYMENTS_ROUTES_PATH" | awk '{print $1}')"
 
 docker exec "$SERVICE" grep -q "/api/stripe/v1" "$APP_PATH"
 docker exec "$SERVICE" grep -q "webhooks/misticpay" "$PAYMENTS_ROUTES_PATH"
@@ -119,14 +135,14 @@ echo "FEATURE_HEAD=${FEATURE_HEAD}"
 
 docker build -t "$FEATURE_IMAGE" "$FEATURE_SRC" >/dev/null
 docker run --rm --entrypoint sh "$FEATURE_IMAGE" -lc "
-  test -f '$AUTH_CONTROLLER_PATH' &&
+  test -f '$PAGARPIX_CONTROLLER_PATH' &&
   test -f '$PIX_ROUTER_PATH' &&
   test -f '$PIX_ROUTING_V3_PATH'
 "
 docker create --name "$FEATURE_CONTAINER" "$FEATURE_IMAGE" >/dev/null
 
 for target in \
-  "$AUTH_CONTROLLER_PATH" \
+  "$PAGARPIX_CONTROLLER_PATH" \
   "$PIX_ROUTER_PATH" \
   "$PIX_ROUTING_V3_PATH"; do
   rel="${target#/app/}"
@@ -140,11 +156,10 @@ section "4. Build candidate from the live runtime"
 docker create --name "$CANDIDATE_CONTAINER" "$BASELINE_IMAGE" >/dev/null
 
 for target in \
-  "$AUTH_CONTROLLER_PATH" \
+  "$PAGARPIX_CONTROLLER_PATH" \
   "$PIX_ROUTER_PATH" \
   "$PIX_ROUTING_V3_PATH"; do
   rel="${target#/app/}"
-  mkdir -p "$EXTRACT/$(dirname "$rel")"
   docker cp "$EXTRACT/$rel" "$CANDIDATE_CONTAINER:$target"
 done
 
@@ -156,24 +171,28 @@ import sys
 
 path = Path(sys.argv[1])
 text = path.read_text()
+
 if "pagarpix/register" not in text:
     marker = "router.post('/register', ctrl.register);"
     if text.count(marker) != 1:
         raise SystemExit('AUTH_ROUTE_PATCH_MARKER_NOT_UNIQUE')
-    text = text.replace(
-        marker,
-        marker + "\nrouter.post('/pagarpix/register', ctrl.registerPagarPix);",
-        1,
+
+    replacement = (
+        "const pagarpixOnboarding = require(\"../controllers/pagarpix-onboarding.controller\");\n"
+        + marker
+        + "\nrouter.post('/pagarpix/register', pagarpixOnboarding.registerPagarPix);"
     )
+    text = text.replace(marker, replacement, 1)
+
 path.write_text(text)
 PY
 
 docker cp "$LIVE_AUTH_ROUTES_HOST" "$CANDIDATE_CONTAINER:$AUTH_ROUTES_PATH"
 docker commit "$CANDIDATE_CONTAINER" "$CANDIDATE_IMAGE" >/dev/null
 
-section "5. Candidate syntax and contract validation"
+section "5. Candidate syntax and protected-runtime validation"
 for target in \
-  "$AUTH_CONTROLLER_PATH" \
+  "$PAGARPIX_CONTROLLER_PATH" \
   "$AUTH_ROUTES_PATH" \
   "$PIX_ROUTER_PATH" \
   "$PIX_ROUTING_V3_PATH"; do
@@ -182,12 +201,19 @@ done
 
 docker run --rm --entrypoint sh "$CANDIDATE_IMAGE" -lc "
   grep -q 'pagarpix/register' '$AUTH_ROUTES_PATH' &&
-  grep -q 'PagarPIX Conta BRL' '$AUTH_CONTROLLER_PATH' &&
+  grep -q 'pagarpix-onboarding.controller' '$AUTH_ROUTES_PATH' &&
+  grep -q 'PagarPIX Conta BRL' '$PAGARPIX_CONTROLLER_PATH' &&
   grep -q 'resolvePixRoutingV3' '$PIX_ROUTER_PATH' &&
   test -f '$PIX_ROUTING_V3_PATH' &&
   grep -q '/api/stripe/v1' '$APP_PATH' &&
   grep -q 'webhooks/misticpay' '$PAYMENTS_ROUTES_PATH'
 "
+
+test "$(image_sha "$CANDIDATE_IMAGE" "$AUTH_CONTROLLER_PATH")" = "$AUTH_CONTROLLER_SHA"
+test "$(image_sha "$CANDIDATE_IMAGE" "$PIX_CONTROLLER_PATH")" = "$PIX_CONTROLLER_SHA"
+test "$(image_sha "$CANDIDATE_IMAGE" "$APP_PATH")" = "$APP_SHA"
+test "$(image_sha "$CANDIDATE_IMAGE" "$PAYMENTS_ROUTES_PATH")" = "$PAYMENTS_ROUTES_SHA"
+echo "PROTECTED_RUNTIME_SHA=PASS"
 
 if docker run --rm --entrypoint sh "$BASELINE_IMAGE" -lc "grep -q \"'/forgot'\" '$AUTH_ROUTES_PATH'"; then
   docker run --rm --entrypoint sh "$CANDIDATE_IMAGE" -lc "grep -q \"'/forgot'\" '$AUTH_ROUTES_PATH' && grep -q \"'/reset'\" '$AUTH_ROUTES_PATH'"
@@ -208,11 +234,18 @@ wait_health
 
 section "7. Production contract verification"
 docker exec "$SERVICE" grep -q "pagarpix/register" "$AUTH_ROUTES_PATH"
-docker exec "$SERVICE" grep -q "PagarPIX Conta BRL" "$AUTH_CONTROLLER_PATH"
+docker exec "$SERVICE" grep -q "pagarpix-onboarding.controller" "$AUTH_ROUTES_PATH"
+docker exec "$SERVICE" grep -q "PagarPIX Conta BRL" "$PAGARPIX_CONTROLLER_PATH"
 docker exec "$SERVICE" grep -q "resolvePixRoutingV3" "$PIX_ROUTER_PATH"
 docker exec "$SERVICE" test -f "$PIX_ROUTING_V3_PATH"
 docker exec "$SERVICE" grep -q "/api/stripe/v1" "$APP_PATH"
 docker exec "$SERVICE" grep -q "webhooks/misticpay" "$PAYMENTS_ROUTES_PATH"
+
+test "$(docker exec "$SERVICE" sha256sum "$AUTH_CONTROLLER_PATH" | awk '{print $1}')" = "$AUTH_CONTROLLER_SHA"
+test "$(docker exec "$SERVICE" sha256sum "$PIX_CONTROLLER_PATH" | awk '{print $1}')" = "$PIX_CONTROLLER_SHA"
+test "$(docker exec "$SERVICE" sha256sum "$APP_PATH" | awk '{print $1}')" = "$APP_SHA"
+test "$(docker exec "$SERVICE" sha256sum "$PAYMENTS_ROUTES_PATH" | awk '{print $1}')" = "$PAYMENTS_ROUTES_SHA"
+echo "PROTECTED_RUNTIME_POST_DEPLOY_SHA=PASS"
 
 REGISTER_STATUS="$(curl -sS -o /tmp/pagarpix-register-probe.json -w '%{http_code}' \
   -H 'content-type: application/json' \
@@ -226,7 +259,15 @@ grep -Eq 'INVALID_EMAIL|INVALID_NAME|WEAK_PASSWORD' /tmp/pagarpix-register-probe
 
 echo "PAGARPIX_REGISTER_PROBE=PASS"
 
-echo
+if docker exec "$SERVICE" grep -q "'/forgot'" "$AUTH_ROUTES_PATH"; then
+  FORGOT_STATUS="$(curl -sS -o /tmp/pagarpix-forgot-probe.json -w '%{http_code}' \
+    -H 'content-type: application/json' \
+    -d '{}' \
+    https://api.xpayments.digital/api/v1/auth/forgot)"
+  test "$FORGOT_STATUS" = "202"
+  echo "PASSWORD_RECOVERY_PROBE=PASS"
+fi
+
 curl -fsS --max-time 8 https://api.xpayments.digital/api/health
 echo
 
