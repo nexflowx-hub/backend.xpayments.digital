@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS public.routing_policies (
   method text NOT NULL,
   currency text NOT NULL,
   strategy text NOT NULL DEFAULT 'priority_failover',
+  activation_mode text NOT NULL DEFAULT 'shadow',
   status text NOT NULL DEFAULT 'active',
   version integer NOT NULL DEFAULT 1,
   candidates jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -95,6 +96,7 @@ CREATE TABLE IF NOT EXISTS public.routing_policies (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT routing_policies_strategy_chk CHECK (strategy IN ('priority_failover','weighted','manual')),
+  CONSTRAINT routing_policies_activation_mode_chk CHECK (activation_mode IN ('shadow','enforce')),
   CONSTRAINT routing_policies_status_chk CHECK (status IN ('active','inactive')),
   CONSTRAINT routing_policies_currency_chk CHECK (currency ~ '^[A-Z0-9]{3,10}$'),
   CONSTRAINT routing_policies_version_chk CHECK (version > 0),
@@ -131,6 +133,7 @@ CREATE TABLE IF NOT EXISTS public.routing_decisions (
   amount_minor bigint NOT NULL,
   environment text NOT NULL,
   strategy text,
+  activation_mode text NOT NULL DEFAULT 'shadow',
   selected_connection_id uuid REFERENCES public.provider_connections(id) ON DELETE SET NULL,
   selected_gateway_vault_id uuid REFERENCES public.gateway_vaults(id) ON DELETE SET NULL,
   eligible_connections jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -140,6 +143,7 @@ CREATE TABLE IF NOT EXISTS public.routing_decisions (
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT routing_decisions_amount_chk CHECK (amount_minor > 0),
   CONSTRAINT routing_decisions_environment_chk CHECK (environment IN ('test','live')),
+  CONSTRAINT routing_decisions_activation_mode_chk CHECK (activation_mode IN ('shadow','enforce')),
   CONSTRAINT routing_decisions_currency_chk CHECK (currency ~ '^[A-Z0-9]{3,10}$'),
   CONSTRAINT routing_decisions_idempotency_uq UNIQUE (merchant_id, idempotency_key)
 );
