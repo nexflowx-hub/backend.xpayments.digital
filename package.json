@@ -8,7 +8,7 @@
     "start": "node dist/core/app.js",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
-    "test": "tsx --test tests/**/*.test.ts"
+    "test": "tsx --test tests/*.test.ts"
   },
   "keywords": [],
   "author": "",
