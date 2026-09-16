@@ -29,6 +29,7 @@ const policySchema = z.object({
   method: z.string().trim().min(1).max(50),
   currency: z.string().trim().min(3).max(10),
   strategy: z.enum(['priority_failover', 'weighted', 'manual']),
+  activationMode: z.enum(['shadow', 'enforce']).optional(),
   status: z.enum(['active', 'inactive']).optional(),
   candidates: z.array(candidateSchema).min(1).max(20)
 });
