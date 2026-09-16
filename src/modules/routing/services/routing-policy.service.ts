@@ -4,6 +4,7 @@ import prisma from '../../../core/prisma';
 type JsonRecord = Record<string, unknown>;
 
 export type RoutingStrategy = 'priority_failover' | 'weighted' | 'manual';
+export type RoutingActivationMode = 'shadow' | 'enforce';
 
 export interface PolicyCandidateInput {
   connectionId: string;
@@ -38,6 +39,7 @@ type RoutingPolicyRow = {
   method: string;
   currency: string;
   strategy: RoutingStrategy;
+  activation_mode: RoutingActivationMode;
   status: string;
   version: number;
   candidates: unknown;
@@ -68,6 +70,7 @@ const serializePolicy = (row: RoutingPolicyRow) => ({
   method: row.method,
   currency: row.currency,
   strategy: row.strategy,
+  activationMode: row.activation_mode,
   status: row.status,
   version: row.version,
   candidates: Array.isArray(row.candidates) ? row.candidates : [],
@@ -144,11 +147,13 @@ export const upsertRoutingPolicy = async (input: {
   method: string;
   currency: string;
   strategy: RoutingStrategy;
+  activationMode?: RoutingActivationMode;
   candidates: PolicyCandidateInput[];
   status?: 'active' | 'inactive';
 }) => {
   const method = normalizeMethod(input.method);
   const currency = normalizeCurrency(input.currency);
+  const activationMode = input.activationMode ?? 'shadow';
   if (!method) throw new RoutingPolicyError('INVALID_METHOD', 'Método de pagamento inválido.');
   if (!/^[A-Z0-9]{3,10}$/.test(currency)) throw new RoutingPolicyError('INVALID_CURRENCY', 'Moeda inválida.');
   if (input.candidates.length === 0) throw new RoutingPolicyError('NO_CANDIDATES', 'Informe pelo menos uma conexão de provider.');
@@ -188,15 +193,16 @@ export const upsertRoutingPolicy = async (input: {
 
     const rows = await tx.$queryRaw<RoutingPolicyRow[]>(Prisma.sql`
       INSERT INTO public.routing_policies (
-        merchant_id, store_id, method, currency, strategy, status, candidates, metadata
+        merchant_id, store_id, method, currency, strategy, activation_mode, status, candidates, metadata
       ) VALUES (
         ${input.merchantId}::uuid, ${input.storeId}::uuid, ${method}, ${currency},
-        ${input.strategy}, ${input.status ?? 'active'}, ${JSON.stringify(candidates)}::jsonb,
+        ${input.strategy}, ${activationMode}, ${input.status ?? 'active'}, ${JSON.stringify(candidates)}::jsonb,
         '{"managedBy":"routing-v3"}'::jsonb
       )
       ON CONFLICT (merchant_id, store_id, method, currency)
       DO UPDATE SET
         strategy = EXCLUDED.strategy,
+        activation_mode = EXCLUDED.activation_mode,
         status = EXCLUDED.status,
         candidates = EXCLUDED.candidates,
         version = public.routing_policies.version + 1,
@@ -216,6 +222,7 @@ export const upsertRoutingPolicy = async (input: {
 
     methodRules[currency] = {
       strategy: input.strategy,
+      activationMode,
       candidates,
       policyId: rows[0].id,
       policyVersion: rows[0].version
@@ -243,6 +250,7 @@ export const listRoutingDecisions = async (merchantId: string, storeId?: string,
       rd.amount_minor AS "amountMinor",
       rd.environment,
       rd.strategy,
+      rd.activation_mode AS "activationMode",
       rd.selected_connection_id AS "selectedConnectionId",
       pc.alias AS "selectedAlias",
       pa.provider AS "selectedProvider",
