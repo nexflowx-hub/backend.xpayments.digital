@@ -1,0 +1,58 @@
+name: PagarPIX Runtime CI
+
+on:
+  push:
+    branches:
+      - feat/pagarpix-functional-v3-pix-runtime
+  workflow_dispatch:
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+          DIRECT_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+
+      - name: TypeScript build
+        run: npm run build
+
+      - name: Validate PagarPIX runtime artifacts
+        run: |
+          test -f dist/modules/auth/controllers/pagarpix-onboarding.controller.js
+          test -f dist/modules/auth/routes/auth.routes.js
+          test -f dist/modules/payments/services/pix-router.service.js
+          test -f dist/modules/payments/services/pix-routing-v3.service.js
+          test -f dist/modules/pagarpix-operational/pagarpix-operational.routes.js
+          grep -q "pagarpix/register" dist/modules/auth/routes/auth.routes.js
+          grep -q "PagarPIX Conta BRL" dist/modules/auth/controllers/pagarpix-onboarding.controller.js
+          grep -q "resolvePixRoutingV3" dist/modules/payments/services/pix-router.service.js
+          grep -q "/payout-requests" dist/modules/pagarpix-operational/pagarpix-operational.routes.js
+          grep -q "/routing/connections" dist/modules/pagarpix-operational/pagarpix-operational.routes.js
+          grep -q "/routing/policies" dist/modules/pagarpix-operational/pagarpix-operational.routes.js
+          grep -q "/routing/decisions" dist/modules/pagarpix-operational/pagarpix-operational.routes.js
+          ! grep -Eq '\.(post|put|patch|delete)\(' dist/modules/pagarpix-operational/pagarpix-operational.routes.js
+
+      - name: Deployment script syntax
+        run: |
+          bash -n scripts/deploy-pagarpix-commercial-v3-hotpatch.sh
+          bash -n scripts/deploy-pagarpix-operational-readonly-v3-hotpatch.sh
+
+      - name: Docker build
+        run: docker build -t xpayments-pagarpix-runtime:ci .

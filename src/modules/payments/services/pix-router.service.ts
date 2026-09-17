@@ -10,6 +10,12 @@ import {
   executePixD1Payment
 } from './pixgo.service';
 
+import {
+  attachPixRoutingDecision,
+  resolvePixRoutingV3,
+  PixRoutingV3Selection
+} from './pix-routing-v3.service';
+
 const prisma = new PrismaClient();
 
 const asRecord = (value: unknown): Record<string, any> => {
@@ -28,6 +34,27 @@ const parseRoutingRules = (value: unknown): Record<string, string> => {
   }
 };
 
+const observeRoutingV3 = async (
+  store: { id: string; merchantId: string },
+  input: ExecutePixPaymentInput
+): Promise<PixRoutingV3Selection | null> => {
+  try {
+    return await resolvePixRoutingV3({
+      storeId: store.id,
+      merchantId: store.merchantId,
+      amountMinor: Number(input.amount),
+      environment: 'live',
+      merchantReference: String(input.merchantReference || '')
+    });
+  } catch (error) {
+    console.error('[PIX ROUTING V3 SHADOW ERROR]', {
+      storeId: store.id,
+      message: error instanceof Error ? error.message : 'unknown'
+    });
+    return null;
+  }
+};
+
 export const executeRoutedPixPayment = async (
   input: ExecutePixPaymentInput
 ) => {
@@ -41,6 +68,20 @@ export const executeRoutedPixPayment = async (
       401,
       'Acesso negado.'
     );
+  }
+
+  /*
+   * Routing V3 is observer-only in this rollout. The real provider remains
+   * selected by the legacy Store.routingRules.pix contract until the provider
+   * executors accept the selected gatewayVaultId explicitly.
+   */
+  const routingV3 = await observeRoutingV3(store, input);
+  if (routingV3?.mode === 'enforce') {
+    console.warn('[PIX ROUTING V3 ENFORCE DEFERRED]', {
+      storeId: store.id,
+      decisionId: routingV3.decisionId,
+      selectedAlias: routingV3.selected?.alias ?? null
+    });
   }
 
   const targetProvider = String(
@@ -57,9 +98,28 @@ export const executeRoutedPixPayment = async (
     );
   }
 
-  if (targetProvider.startsWith('pix-d1')) {
-    return executePixD1Payment(input);
-  }
+  const result = targetProvider.startsWith('pix-d1')
+    ? await executePixD1Payment(input)
+    : await executeLegacyPixPayment(input);
 
-  return executeLegacyPixPayment(input);
+  await attachPixRoutingDecision(
+    routingV3?.decisionId ?? null,
+    result?.transactionId ?? null
+  ).catch(error => {
+    console.error('[PIX ROUTING V3 ATTACH ERROR]', {
+      storeId: store.id,
+      decisionId: routingV3?.decisionId ?? null,
+      message: error instanceof Error ? error.message : 'unknown'
+    });
+  });
+
+  console.log('[PIX ROUTING OBSERVED]', {
+    storeId: store.id,
+    legacyProvider: targetProvider,
+    routingMode: routingV3?.mode ?? 'unavailable',
+    selectedAlias: routingV3?.selected?.alias ?? null,
+    decisionId: routingV3?.decisionId ?? null
+  });
+
+  return result;
 };
