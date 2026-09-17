@@ -155,7 +155,11 @@ echo "OPERATIONAL_ARTIFACT=PASS"
 
 section "4. Build candidate from live runtime"
 docker create --name "$CANDIDATE_CONTAINER" "$BASELINE_IMAGE" >/dev/null
-docker cp "$EXTRACT/$rel" "$CANDIDATE_CONTAINER:$OPS_ROUTE_PATH"
+OPS_DIR_HOST="$EXTRACT/dist/modules/pagarpix-operational"
+test -d "$OPS_DIR_HOST"
+docker cp "$OPS_DIR_HOST" "$CANDIDATE_CONTAINER:/app/dist/modules/"
+docker cp "$CANDIDATE_CONTAINER:$OPS_ROUTE_PATH" /tmp/pagarpix-operational-copy-probe.js >/dev/null
+rm -f /tmp/pagarpix-operational-copy-probe.js
 
 LIVE_APP_HOST="$EXTRACT/live-app.js"
 docker cp "$CANDIDATE_CONTAINER:$APP_PATH" "$LIVE_APP_HOST"
