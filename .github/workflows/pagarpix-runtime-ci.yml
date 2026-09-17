@@ -39,12 +39,20 @@ jobs:
           test -f dist/modules/auth/routes/auth.routes.js
           test -f dist/modules/payments/services/pix-router.service.js
           test -f dist/modules/payments/services/pix-routing-v3.service.js
+          test -f dist/modules/pagarpix-operational/pagarpix-operational.routes.js
           grep -q "pagarpix/register" dist/modules/auth/routes/auth.routes.js
           grep -q "PagarPIX Conta BRL" dist/modules/auth/controllers/pagarpix-onboarding.controller.js
           grep -q "resolvePixRoutingV3" dist/modules/payments/services/pix-router.service.js
+          grep -q "/payout-requests" dist/modules/pagarpix-operational/pagarpix-operational.routes.js
+          grep -q "/routing/connections" dist/modules/pagarpix-operational/pagarpix-operational.routes.js
+          grep -q "/routing/policies" dist/modules/pagarpix-operational/pagarpix-operational.routes.js
+          grep -q "/routing/decisions" dist/modules/pagarpix-operational/pagarpix-operational.routes.js
+          ! grep -Eq '\.(post|put|patch|delete)\(' dist/modules/pagarpix-operational/pagarpix-operational.routes.js
 
       - name: Deployment script syntax
-        run: bash -n scripts/deploy-pagarpix-commercial-v3-hotpatch.sh
+        run: |
+          bash -n scripts/deploy-pagarpix-commercial-v3-hotpatch.sh
+          bash -n scripts/deploy-pagarpix-operational-readonly-v3-hotpatch.sh
 
       - name: Docker build
         run: docker build -t xpayments-pagarpix-runtime:ci .
