@@ -98,12 +98,18 @@ for target in \
   "$AUTH_CONTROLLER_PATH" \
   "$AUTH_ROUTES_PATH" \
   "$PIX_CONTROLLER_PATH" \
-  "$PIX_ROUTER_PATH" \
   "$APP_PATH" \
   "$PAYMENTS_ROUTES_PATH"; do
   docker exec "$SERVICE" test -f "$target"
   docker exec "$SERVICE" sha256sum "$target"
 done
+
+if docker exec "$SERVICE" test -f "$PIX_ROUTER_PATH"; then
+  echo "PIX_ROUTER_BASELINE=PRESENT"
+  docker exec "$SERVICE" sha256sum "$PIX_ROUTER_PATH"
+else
+  echo "PIX_ROUTER_BASELINE=ABSENT_OPTIONAL"
+fi
 
 AUTH_CONTROLLER_SHA="$(docker exec "$SERVICE" sha256sum "$AUTH_CONTROLLER_PATH" | awk '{print $1}')"
 PIX_CONTROLLER_SHA="$(docker exec "$SERVICE" sha256sum "$PIX_CONTROLLER_PATH" | awk '{print $1}')"
