@@ -19,6 +19,33 @@ const asRecord = (value: unknown): Record<string, any> => {
   return {};
 };
 
+const sanitizeTransactionMetadata = (
+  value: unknown
+): Record<string, string | number | boolean | null> => {
+  const source = asRecord(value);
+  const result: Record<string, string | number | boolean | null> = {};
+  const blocked = /(password|secret|token|api[_-]?key|card|document|cpf|cnpj|tax[_-]?id)/i;
+
+  for (const [rawKey, rawValue] of Object.entries(source).slice(0, 64)) {
+    const key = String(rawKey).trim().slice(0, 80);
+    if (!key || blocked.test(key)) continue;
+
+    if (
+      typeof rawValue === 'string' ||
+      typeof rawValue === 'number' ||
+      typeof rawValue === 'boolean' ||
+      rawValue === null
+    ) {
+      result[key] =
+        typeof rawValue === 'string'
+          ? rawValue.slice(0, 500)
+          : rawValue;
+    }
+  }
+
+  return result;
+};
+
 const parseRoutingRules = (value: unknown): Record<string, string> => {
   try {
     if (typeof value === 'string') return JSON.parse(value);
@@ -327,6 +354,7 @@ export const executePixD1Payment = async (
 
   const customer = input.customer || {};
   const metadata = input.metadata || {};
+  const safeMetadata = sanitizeTransactionMetadata(metadata);
   const payerName = String(
     customer.name ?? customer.fullName ?? metadata.payerName ?? ''
   ).trim();
@@ -402,6 +430,7 @@ export const executePixD1Payment = async (
         gateway: 'pix',
         customer: payerName || null,
         customerEmail: email || null,
+        metadata: safeMetadata,
         rawRequest: safeRawRequest
       }
     });
@@ -419,6 +448,7 @@ export const executePixD1Payment = async (
         gateway: 'pix',
         customer: payerName || null,
         customerEmail: email || null,
+        metadata: safeMetadata,
         rawRequest: safeRawRequest
       }
     });
