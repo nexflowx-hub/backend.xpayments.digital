@@ -9,6 +9,9 @@ const router = Router();
 // ==========================================
 router.post('/charge', directController.processDirectCharge);
 
+// Merchant S2S read-only reconciliation. Scoped to the Store resolved by the API key.
+router.get('/transactions/:id', directController.getDirectTransactionStatus);
+
 // ==========================================
 // ROTA INBOUND DE PROVEDORES (Webhooks globais)
 // ==========================================
