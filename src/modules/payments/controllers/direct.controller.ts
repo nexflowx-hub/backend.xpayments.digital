@@ -906,3 +906,123 @@ export const processDirectCharge =
       });
     }
   };
+
+
+export const getDirectTransactionStatus =
+  async (
+    req: Request,
+    res: Response
+  ) => {
+    try {
+      const authorization =
+        req.headers.authorization;
+
+      const apiKey =
+        authorization?.startsWith('Bearer ')
+          ? authorization
+              .slice('Bearer '.length)
+              .trim()
+          : String(
+              req.headers['x-api-key'] ?? ''
+            ).trim();
+
+      if (!apiKey) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'API_KEY_REQUIRED',
+            message: 'API Key não fornecida.'
+          }
+        });
+      }
+
+      const keyRecord =
+        await prisma.apiKey.findUnique({
+          where: { key: apiKey },
+          include: { store: true }
+        });
+
+      if (
+        !keyRecord ||
+        keyRecord.store.status !== 'active'
+      ) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'ACCESS_DENIED',
+            message: 'Acesso negado.'
+          }
+        });
+      }
+
+      const transactionId =
+        Array.isArray(req.params.id)
+          ? req.params.id[0]
+          : String(req.params.id ?? '').trim();
+
+      if (!transactionId) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_TRANSACTION_ID',
+            message: 'Transação inválida.'
+          }
+        });
+      }
+
+      const transaction =
+        await prisma.transaction.findFirst({
+          where: {
+            id: transactionId,
+            storeId: keyRecord.store.id,
+            merchantId: keyRecord.store.merchantId
+          },
+          select: {
+            id: true,
+            reference: true,
+            amount: true,
+            currency: true,
+            status: true,
+            method: true,
+            createdAt: true
+          }
+        });
+
+      if (!transaction) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'TRANSACTION_NOT_FOUND',
+            message: 'Transação não encontrada.'
+          }
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          transactionId: transaction.id,
+          reference: transaction.reference,
+          amount: Number(transaction.amount),
+          currency: transaction.currency,
+          status: transaction.status,
+          method: transaction.method,
+          storeCode: keyRecord.store.storeCode,
+          createdAt: transaction.createdAt.toISOString()
+        }
+      });
+    } catch (error) {
+      console.error(
+        '[DIRECT_TRANSACTION_STATUS_ERROR]',
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'TRANSACTION_STATUS_ERROR',
+          message: 'Não foi possível consultar a transação.'
+        }
+      });
+    }
+  };
