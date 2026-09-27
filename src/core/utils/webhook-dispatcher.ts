@@ -37,26 +37,52 @@ export const dispatchMerchantWebhook = async (transactionId: string, eventType: 
       headers['x-nexflowx-signature'] = signature;
     }
 
-    // Dispara via fetch nativo do Node.js 20
-    const response = await fetch(activeWebhook.url, {
-      method: 'POST',
-      headers,
-      body: payloadString
-    });
+    // Dispara via fetch nativo do Node.js 20. Retry apenas em falha transitória
+    // (rede/5xx), nunca em 4xx, para não martelar configurações inválidas.
+    const retryDelaysMs = [0, 750, 2_000];
+    let finalStatus: number | null = null;
+    let delivered = false;
+    let attempts = 0;
 
-    // Grava na BD o resultado do envio para auditoria
+    for (const delayMs of retryDelaysMs) {
+      if (delayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+
+      attempts += 1;
+      try {
+        const response = await fetch(activeWebhook.url, {
+          method: 'POST',
+          headers,
+          body: payloadString,
+          signal: AbortSignal.timeout(8_000)
+        });
+        finalStatus = response.status;
+        delivered = response.ok;
+
+        if (delivered || (response.status >= 400 && response.status < 500)) {
+          break;
+        }
+      } catch {
+        finalStatus = null;
+      }
+    }
+
+    // Grava na BD o resultado final e a contagem de tentativas para auditoria.
     await prisma.transaction.update({
       where: { id: transaction.id },
       data: {
         webhookSentLog: {
           url: activeWebhook.url,
-          status: response.status,
+          status: finalStatus,
+          attempts,
+          delivered,
           time: new Date().toISOString()
         }
       }
     });
 
-    return response.ok;
+    return delivered;
   } catch (error) {
     console.error('[WEBHOOK DISPATCH ERROR]:', error);
     return false;
