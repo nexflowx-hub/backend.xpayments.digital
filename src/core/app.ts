@@ -14,6 +14,7 @@ import payoutStatementRoutes from '../modules/payout-statements/routes/payout-st
 import walletRoutes from '../modules/wallet/routes/wallet.routes';
 import transactionRoutes from '../modules/transactions/routes/transactions.routes';
 import treasuryRoutes from '../modules/treasury/routes/treasury.routes';
+import routingRoutes from '../modules/routing/routes/routing.routes';
 import riskRoutes from '../modules/risk/routes/risk.routes';
 import merchantRoutes from '../modules/merchant/routes/merchant.routes';
 import gatewayRoutes from '../modules/gateway/routes/gateway.routes';
@@ -23,9 +24,11 @@ import adminRoutes from '../modules/admin/routes/admin.routes';
 
 import { authMiddleware } from '../middleware/auth.middleware';
 import { processSettlements } from './jobs/settlement.job';
+import { getAllowedCorsOrigins } from './config/security';
 
 const app = express();
 const PORT = 8084;
+const allowedCorsOrigins = new Set(getAllowedCorsOrigins());
 
 app.set('trust proxy', 1);
 
@@ -33,7 +36,19 @@ app.use(helmet());
 
 app.use(cors({
   origin(origin, callback) {
-    callback(null, true);
+    /* S2S requests usually have no Origin and must remain valid. */
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+
+    /* Preserve legacy behavior until an explicit allowlist is configured. */
+    if (allowedCorsOrigins.size === 0 || allowedCorsOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error('CORS_ORIGIN_NOT_ALLOWED'));
   },
 
   credentials: true,
@@ -51,6 +66,7 @@ app.use(cors({
     'Authorization',
     'Content-Type',
     'x-api-key',
+    'Idempotency-Key',
     'Accept'
   ]
 }));
@@ -154,6 +170,7 @@ api.use('/finance', financeRoutes);
 api.use('/payout-statements', payoutStatementRoutes);
 api.use('/risk', riskRoutes);
 api.use('/treasury', treasuryRoutes);
+api.use('/routing', routingRoutes);
 
 api.use('/', commerceRoutes);
 api.use('/', developerRoutes);

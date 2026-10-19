@@ -9,6 +9,12 @@ export type RoutingStrategy =
   | 'weighted'
   | 'manual';
 
+export type ProviderHealthStatus =
+  | 'healthy'
+  | 'degraded'
+  | 'unavailable'
+  | 'unknown';
+
 export interface RoutingV2Request {
   merchantId: string;
   storeId: string;
@@ -27,6 +33,8 @@ export interface RoutingV2Candidate {
   gatewayVaultId: string | null;
   priority: number;
   weight: number;
+  healthStatus: ProviderHealthStatus;
+  healthObservedAt: string | null;
 }
 
 export interface RoutingV2Resolution {
@@ -36,6 +44,8 @@ export interface RoutingV2Resolution {
   selected: RoutingV2Candidate | null;
   eligible: RoutingV2Candidate[];
   reason: string;
+  policyId?: string | null;
+  policyVersion?: number | null;
 }
 
 interface ProviderConnectionRow {
@@ -47,6 +57,15 @@ interface ProviderConnectionRow {
   environment: string;
   default_currency: string | null;
   gateway_vault_id: string | null;
+  health_status: string | null;
+  health_observed_at: Date | string | null;
+}
+
+interface RoutingPolicyRow {
+  id: string;
+  strategy: string;
+  version: number;
+  candidates: unknown;
 }
 
 const asRecord = (value: unknown): JsonRecord =>
@@ -70,28 +89,27 @@ const numberOr = (value: unknown, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-/**
- * Routing V2 is intentionally opt-in.
- *
- * Existing stores keep their current routingRules shape and therefore stay
- * on the legacy payment path. Nothing calls this resolver from the certified
- * Direct controller yet.
- *
- * Canonical V2 shape:
- * {
- *   version: 2,
- *   methods: {
- *     pix: {
- *       BRL: {
- *         strategy: 'priority_failover',
- *         candidates: [
- *           { connectionId: '...', priority: 10, enabled: true, weight: 100 }
- *         ]
- *       }
- *     }
- *   }
- * }
- */
+const normalizeHealth = (value: unknown): ProviderHealthStatus => {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (
+    normalized === 'healthy' ||
+    normalized === 'degraded' ||
+    normalized === 'unavailable'
+  ) {
+    return normalized;
+  }
+  return 'unknown';
+};
+
+const healthRank = (status: ProviderHealthStatus): number => {
+  switch (status) {
+    case 'healthy': return 0;
+    case 'unknown': return 1;
+    case 'degraded': return 2;
+    case 'unavailable': return 3;
+  }
+};
+
 export const resolveProviderRouteV2 = async (
   input: RoutingV2Request
 ): Promise<RoutingV2Resolution> => {
@@ -125,7 +143,28 @@ export const resolveProviderRouteV2 = async (
       ? String(rules[method])
       : null;
 
-  if (Number(rules.version) !== 2) {
+  const policyRows = await prisma.$queryRaw<RoutingPolicyRow[]>(Prisma.sql`
+    SELECT id::text, strategy, version, candidates
+    FROM public.routing_policies
+    WHERE merchant_id = ${input.merchantId}::uuid
+      AND store_id = ${input.storeId}::uuid
+      AND method = ${method}
+      AND currency = ${currency}
+      AND status = 'active'
+    LIMIT 1
+  `);
+  const persistedPolicy = policyRows[0] ?? null;
+
+  const methods = asRecord(rules.methods);
+  const methodConfig = asRecord(methods[method]);
+  const currencyConfig = asRecord(
+    methodConfig[currency] ?? methodConfig.default
+  );
+
+  const routingV2Enabled =
+    Boolean(persistedPolicy) || Number(rules.version) === 2;
+
+  if (!routingV2Enabled) {
     return {
       mode: 'legacy',
       strategy: null,
@@ -136,13 +175,7 @@ export const resolveProviderRouteV2 = async (
     };
   }
 
-  const methods = asRecord(rules.methods);
-  const methodConfig = asRecord(methods[method]);
-  const currencyConfig = asRecord(
-    methodConfig[currency] ?? methodConfig.default
-  );
-
-  if (Object.keys(currencyConfig).length === 0) {
+  if (!persistedPolicy && Object.keys(currencyConfig).length === 0) {
     return {
       mode: 'v2',
       strategy: null,
@@ -154,7 +187,9 @@ export const resolveProviderRouteV2 = async (
   }
 
   const rawStrategy = String(
-    currencyConfig.strategy ?? 'priority_failover'
+    persistedPolicy?.strategy ??
+      currencyConfig.strategy ??
+      'priority_failover'
   );
 
   const strategy: RoutingStrategy =
@@ -162,8 +197,11 @@ export const resolveProviderRouteV2 = async (
       ? rawStrategy
       : 'priority_failover';
 
-  const configuredCandidates = Array.isArray(currencyConfig.candidates)
-    ? currencyConfig.candidates
+  const candidateSource =
+    persistedPolicy?.candidates ?? currencyConfig.candidates;
+
+  const configuredCandidates = Array.isArray(candidateSource)
+    ? candidateSource
         .map(asRecord)
         .filter(candidate => candidate.enabled !== false)
     : [];
@@ -175,7 +213,9 @@ export const resolveProviderRouteV2 = async (
       legacyProvider,
       selected: null,
       eligible: [],
-      reason: 'no_enabled_candidates'
+      reason: 'no_enabled_candidates',
+      policyId: persistedPolicy?.id ?? null,
+      policyVersion: persistedPolicy?.version ?? null
     };
   }
 
@@ -196,12 +236,29 @@ export const resolveProviderRouteV2 = async (
       pa.external_account_id,
       pa.environment,
       pa.default_currency,
-      pc.gateway_vault_id::text AS gateway_vault_id
-    FROM provider_connections pc
-    JOIN provider_accounts pa
+      pc.gateway_vault_id::text AS gateway_vault_id,
+      CASE
+        WHEN health.observed_at IS NULL THEN 'unknown'
+        WHEN health.observed_at < now() - interval '5 minutes' THEN 'unknown'
+        ELSE health.health_status
+      END AS health_status,
+      CASE
+        WHEN health.observed_at IS NULL THEN NULL
+        WHEN health.observed_at < now() - interval '5 minutes' THEN NULL
+        ELSE health.observed_at
+      END AS health_observed_at
+    FROM public.provider_connections pc
+    JOIN public.provider_accounts pa
       ON pa.id = pc.provider_account_id
-    LEFT JOIN gateway_vaults gv
+    LEFT JOIN public.gateway_vaults gv
       ON gv.id = pc.gateway_vault_id
+    LEFT JOIN LATERAL (
+      SELECT health_status, observed_at
+      FROM public.provider_health_snapshots ph
+      WHERE ph.provider_connection_id = pc.id
+      ORDER BY observed_at DESC
+      LIMIT 1
+    ) health ON true
     WHERE pc.merchant_id = ${input.merchantId}::uuid
       AND pc.store_id = ${input.storeId}::uuid
       AND lower(pc.status) = 'active'
@@ -261,6 +318,11 @@ export const resolveProviderRouteV2 = async (
       continue;
     }
 
+    const healthStatus = normalizeHealth(row.health_status);
+    if (healthStatus === 'unavailable') {
+      continue;
+    }
+
     eligible.push({
       connectionId: row.connection_id,
       alias: row.alias,
@@ -269,15 +331,25 @@ export const resolveProviderRouteV2 = async (
       externalAccountId: row.external_account_id,
       gatewayVaultId: row.gateway_vault_id,
       priority: numberOr(configured.priority, 100),
-      weight: Math.max(0, numberOr(configured.weight, 100))
+      weight: Math.max(0, numberOr(configured.weight, 100)),
+      healthStatus,
+      healthObservedAt:
+        row.health_observed_at instanceof Date
+          ? row.health_observed_at.toISOString()
+          : row.health_observed_at
+            ? String(row.health_observed_at)
+            : null
     });
   }
 
   eligible.sort((a, b) => {
+    const healthDifference = healthRank(a.healthStatus) - healthRank(b.healthStatus);
+    if (healthDifference !== 0) {
+      return healthDifference;
+    }
     if (a.priority !== b.priority) {
       return a.priority - b.priority;
     }
-
     return a.alias.localeCompare(b.alias);
   });
 
@@ -288,13 +360,17 @@ export const resolveProviderRouteV2 = async (
       legacyProvider,
       selected: null,
       eligible,
-      reason: 'no_eligible_connection'
+      reason: 'no_eligible_connection',
+      policyId: persistedPolicy?.id ?? null,
+      policyVersion: persistedPolicy?.version ?? null
     };
   }
 
-  // Only deterministic priority selection is activated in V1 of the resolver.
-  // Weighted routing is intentionally deferred until sticky/idempotent selection
-  // and provider health are persisted as first-class routing decisions.
+  /*
+   * V3 persists a sticky routing decision around this deterministic selector.
+   * Weighted routing remains deliberately deterministic until a weighted
+   * choice can be made once and then replayed from routing_decisions.
+   */
   const selected = eligible[0];
 
   return {
@@ -306,6 +382,10 @@ export const resolveProviderRouteV2 = async (
     reason:
       strategy === 'weighted'
         ? 'weighted_preview_priority_selected'
-        : 'selected'
+        : selected.healthStatus === 'degraded'
+          ? 'selected_degraded_fallback'
+          : 'selected',
+    policyId: persistedPolicy?.id ?? null,
+    policyVersion: persistedPolicy?.version ?? null
   };
 };
