@@ -18,8 +18,10 @@ This integration is NOT a payment gateway, Stripe Connect onboarding, transfer, 
 ## Required order
 
 1. Rotate the shared live restricted API keys, existing webhook secrets and initial password using the
-   account owner's Stripe Dashboard and a secret manager. Previously pasted credentials must be
-   treated as compromised. Do not paste them into GitHub, logs, tickets, or this repository.
+   account owner's Stripe Dashboard and a secret manager. Coordinate rotation of the CUSTOMER'S
+   existing endpoint signing secrets with an atomic update of its app environment and deployment;
+   rotating those without updating the client can interrupt payments. Previously pasted credentials
+   must be treated as compromised. Do not paste them into GitHub, logs, tickets, or this repository.
 2. Review PR; validate Prisma migration in staging; deploy the independent webhook receiver first.
    Confirm `/api/health` and `/api/v1/observer/stripe/:sourceCode` resolve to the correct host.
 3. Set `VIVACHURCH_MERCHANT_INITIAL_PASSWORD` through the server's secret manager; run
@@ -39,7 +41,8 @@ This integration is NOT a payment gateway, Stripe Connect onboarding, transfer, 
    Set the optional account IDs `STRIPE_OBSERVER_VIVACHURCH_ACCOUNT_ID` and
    `STRIPE_OBSERVER_HUMANIMPACT_ACCOUNT_ID` only after verifying in Stripe.
 6. Deploy/restart with secrets loaded. Check Stripe delivery health for BOTH added endpoints
-   and absence of impact on the customer's existing endpoints.
+   and absence of impact on the customer's existing endpoints. Then rerun the idempotent
+   bootstrap in the secured runtime to mark the sources active (it will not reset passwords).
 7. Log in to the merchant portal and verify authenticated GET:
    - `/api/v1/observer/sources`
    - `/api/v1/observer/summary?sourceCode=vivachurch&currency=GBP`
