@@ -28,6 +28,7 @@ model Merchant {
   stores           Store[]
   checkoutSessions CheckoutSession[]
   gatewayVaults    GatewayVault[]
+  observerSources  ObserverSource[]
 
   @@map("merchants")
 }
@@ -160,6 +161,7 @@ model Store {
   transactions     Transaction[]
   apiKeys          ApiKey[]
   webhooks         Webhook[]
+  observerSources  ObserverSource[]
 
   @@map("stores")
 }
@@ -231,4 +233,68 @@ model GatewayVault {
   transactions     Transaction[]
   checkoutSessions CheckoutSession[]
   @@map("gateway_vaults")
+}
+
+//
+// Strictly read-only financial telemetry from external Stripe accounts.
+// This subsystem must never mutate Wallet, Transaction, or settlement records.
+//
+model ObserverSource {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId String   @map("merchant_id") @db.Uuid
+  storeId    String   @map("store_id") @db.Uuid
+  sourceCode String   @unique @map("source_code")
+  provider   String   @default("stripe")
+  accountId  String?  @map("account_id")
+  mode       String   @default("observer")
+  status     String   @default("pending")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  merchant Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  store    Store             @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  events   ObserverEvent[]
+  payments ObserverPayment[]
+
+  @@index([merchantId, storeId])
+  @@map("observer_sources")
+}
+
+model ObserverEvent {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sourceId        String   @map("source_id") @db.Uuid
+  eventId         String   @map("event_id")
+  eventType       String   @map("event_type")
+  objectId        String?  @map("object_id")
+  objectType      String?  @map("object_type")
+  objectStatus    String?  @map("object_status")
+  currency        String?
+  amountMinor     BigInt?  @map("amount_minor")
+  stripeCreatedAt DateTime @map("stripe_created_at") @db.Timestamptz
+  receivedAt      DateTime @default(now()) @map("received_at") @db.Timestamptz
+
+  source ObserverSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, eventId])
+  @@index([sourceId, stripeCreatedAt(sort: Desc)])
+  @@map("observer_events")
+}
+
+model ObserverPayment {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sourceId           String   @map("source_id") @db.Uuid
+  paymentIntentId    String   @map("payment_intent_id")
+  currency           String
+  amountMinor        BigInt   @map("amount_minor")
+  receivedMinor      BigInt   @map("received_minor")
+  status             String
+  lastEventCreatedAt DateTime @map("last_event_created_at") @db.Timestamptz
+  lastEventId        String   @map("last_event_id")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  source ObserverSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, paymentIntentId])
+  @@index([sourceId, currency, status])
+  @@map("observer_payments")
 }
