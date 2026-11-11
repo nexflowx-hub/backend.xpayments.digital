@@ -76,6 +76,16 @@ async function main() {
             status: 'pending'
           }
         });
+      } else if (process.env[item.secretEnv]?.startsWith('whsec_')) {
+        // Activate only when the operator reruns bootstrap after adding the
+        // independent Stripe observer signing secret and completing validation.
+        await tx.observerSource.update({
+          where: { id: existing.id },
+          data: {
+            status: 'active',
+            ...(process.env[item.accountEnv] ? { accountId: process.env[item.accountEnv] } : {})
+          }
+        });
       }
 
       // Never put live Stripe keys or whsec signing secrets in GatewayVault JSON.
