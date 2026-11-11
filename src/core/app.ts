@@ -21,6 +21,7 @@ import commerceRoutes from '../modules/commerce/routes/commerce.routes';
 import developerRoutes from '../modules/developer/routes/developer.routes';
 import adminRoutes from '../modules/admin/routes/admin.routes';
 
+import { observerIngressRoutes, observerReadRoutes } from '../modules/observer/controllers/observer.controller';
 import { authMiddleware } from '../middleware/auth.middleware';
 import { processSettlements } from './jobs/settlement.job';
 
@@ -54,6 +55,14 @@ app.use(cors({
     'Accept'
   ]
 }));
+
+// Stripe Observer requires the exact raw request body for signature validation.
+// Mount BEFORE express.json. This is not the legacy, ledger-mutating Stripe webhook.
+app.use(
+  '/api/v1/observer/stripe',
+  express.raw({ type: 'application/json', limit: '256kb' }),
+  observerIngressRoutes
+);
 
 app.use(express.json({
   limit: '256kb'
@@ -146,6 +155,7 @@ const api = express.Router();
 api.use(authMiddleware);
 
 api.use('/merchant', merchantRoutes);
+api.use('/observer', observerReadRoutes);
 api.use('/gateway-vault', gatewayRoutes);
 api.use('/transactions', transactionRoutes);
 api.use('/wallets', walletRoutes);
